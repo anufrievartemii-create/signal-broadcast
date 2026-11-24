@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from dataclasses import dataclass
 
 from sqlalchemy import func, or_, select
@@ -16,31 +15,6 @@ from app.services import audit
 from app.signal.base import GroupInfo, SignalBackend, SignalError, accept_already_done
 
 log = logging.getLogger(__name__)
-
-_DEBUG_LOG = r"c:\Users\anufr\Desktop\signal-broadcast\.cursor\debug-4e9a74.log"
-
-
-def _agent_dbg(hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    # #region agent log
-    try:
-        with open(_DEBUG_LOG, "a", encoding="utf-8") as fh:
-            fh.write(
-                json.dumps(
-                    {
-                        "sessionId": "4e9a74",
-                        "runId": "pre-fix",
-                        "hypothesisId": hypothesis_id,
-                        "location": location,
-                        "message": message,
-                        "data": data,
-                        "timestamp": int(time.time() * 1000),
-                    }
-                )
-                + "\n"
-            )
-    except OSError:
-        pass
-    # #endregion
 
 
 @dataclass(slots=True)
@@ -95,47 +69,20 @@ async def accept_pending_invites(
     account: Account,
     *,
     pull_messages: bool = True,
-) -> int:
-    """Принимает приглашения, которые Signal уже показал этому аккаунту."""
+) -> tuple[int, list[GroupInfo]]:
+    """Принимает приглашения, которые Signal уже показал этому аккаунту.
+
+    Возвращает число принятых приглашений и список групп с этого чтения.
+    Повторный list_groups нужен только если состав изменился.
+    """
     if not account.identifier:
-        return 0
-    suffix = account.identifier[-4:]
-    started = time.perf_counter()
-    # #region agent log
-    _agent_dbg(
-        "E",
-        "groups.py:accept_pending_invites",
-        "start",
-        {"pull": pull_messages, "id_suffix": suffix},
-    )
-    # #endregion
+        return 0, []
     if pull_messages:
         try:
             await backend.pull_messages(account.identifier)
         except SignalError as exc:
             log.info("Приём перед синхронизацией %s пропущен: %s", account.identifier, exc)
-        # #region agent log
-        _agent_dbg(
-            "E",
-            "groups.py:accept_pending_invites",
-            "after pull",
-            {"ms": int((time.perf_counter() - started) * 1000), "id_suffix": suffix},
-        )
-        # #endregion
-    listed = time.perf_counter()
     infos = await backend.list_groups(account.identifier)
-    # #region agent log
-    _agent_dbg(
-        "D",
-        "groups.py:accept_pending_invites",
-        "after list_groups",
-        {
-            "ms": int((time.perf_counter() - listed) * 1000),
-            "groups": len(infos),
-            "id_suffix": suffix,
-        },
-    )
-    # #endregion
     accepted = 0
     for info in infos:
         if not is_pending_invite(info, account):
@@ -157,7 +104,7 @@ async def accept_pending_invites(
             f"аккаунт {account.identifier}: принято {accepted}",
             commit=False,
         )
-    return accepted
+    return accepted, infos
 
 
 async def sync_account_groups(
@@ -173,8 +120,9 @@ async def sync_account_groups(
     active=False — история рассылок по ним должна оставаться.
     Ручное выключение рассылки (active=False при is_member=True) не включаем обратно.
     """
-    accepted = await accept_pending_invites(session, backend, account, pull_messages=pull_messages)
-    infos = await backend.list_groups(account.identifier)
+    accepted, infos = await accept_pending_invites(session, backend, account, pull_messages=pull_messages)
+    if accepted or not account.identifier:
+        infos = await backend.list_groups(account.identifier)
     result = await session.execute(select(Group).where(Group.account_id == account.id))
     existing = {g.group_id: g for g in result.scalars().all()}
     seen: set[str] = set()

@@ -249,7 +249,7 @@ class RestApiBackend:
                 "ignore_stories": "true",
                 "ignore_stickers": "true",
             },
-            timeout=max(8.0, timeout + 7.0),
+            timeout=max(20.0, timeout + 5.0),
         )
         data = self._json_or_empty(resp)
         if isinstance(data, dict):

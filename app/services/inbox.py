@@ -1,10 +1,10 @@
-"""Слушатель входящих: WebSocket /v1/receive/{number} и обработка стоп-слов.
+"""Слушатель входящих: /v1/receive/{number} и обработка стоп-слов.
 
 Зачем нужен:
 1. Отписки по ключевому слову («стоп») — группа снимается с рассылки.
 2. Signal требует регулярного приёма сообщений, иначе составы групп и таймеры
    исчезновения устаревают. Поэтому контейнер держим с AUTO_RECEIVE_SCHEDULE,
-   а приложение — с постоянным WebSocket-подключением.
+   а приложение — с постоянным приёмом: HTTP в native/normal, WebSocket в json-rpc.
 """
 
 from __future__ import annotations
@@ -104,13 +104,36 @@ def parse_envelope(data: dict) -> dict:
 
 
 class InboxListener:
-    """Держит по одному WebSocket-подключению на каждый привязанный аккаунт."""
+    """Слушает входящие каждого привязанного аккаунта.
+
+    json-rpc режим signal-cli-rest-api поднимает WebSocket на /v1/receive.
+    native и normal отвечают на тот же путь обычным HTTP 200 со списком конвертов.
+    """
 
     def __init__(self, backend: SignalBackend | None = None) -> None:
         self._backend = backend
         self._tasks: dict[str, asyncio.Task] = {}
         self._group_sync_tasks: dict[int, asyncio.Task] = {}
         self._stop = asyncio.Event()
+        self._api_mode_value: str | None = None
+        self._receive_allowed = asyncio.Event()
+        self._receive_allowed.set()
+        self._receive_state = asyncio.Lock()
+        self._active_receives = 0
+        self._receive_idle = asyncio.Event()
+        self._receive_idle.set()
+
+    async def suspend_receive(self) -> None:
+        """Останавливает новые приёмы и ждёт, пока текущие отпустят signal-cli."""
+        async with self._receive_state:
+            self._receive_allowed.clear()
+            idle = self._active_receives == 0
+        if not idle:
+            await self._receive_idle.wait()
+
+    def resume_receive(self) -> None:
+        """Снова разрешает приём входящих."""
+        self._receive_allowed.set()
 
     @property
     def backend(self) -> SignalBackend:
@@ -170,8 +193,24 @@ class InboxListener:
             await asyncio.gather(*tasks, return_exceptions=True)
         log.info("Слушатель входящих остановлен")
 
+    async def _api_mode(self) -> str:
+        """Режим signal-cli-rest-api из /v1/about. Пустая строка, если режима нет."""
+        if self._api_mode_value is not None:
+            return self._api_mode_value
+        try:
+            info = await self.backend.about()
+        except Exception:
+            info = {}
+        mode = str(info.get("mode") or "") if isinstance(info, dict) else ""
+        self._api_mode_value = mode
+        return mode
+
     async def _listen(self, identifier: str, account_id: int, url: str) -> None:
         """Цикл подключения с экспоненциальным backoff после обрывов."""
+        mode = await self._api_mode()
+        if mode in {"native", "normal"}:
+            await self._listen_http(identifier, account_id)
+            return
         backoff = _RECONNECT_MIN
         while not self._stop.is_set():
             try:
@@ -190,6 +229,46 @@ class InboxListener:
                 break
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, _RECONNECT_MAX)
+
+    async def _listen_http(self, identifier: str, account_id: int) -> None:
+        """Короткий HTTP-приём. Между запросами оставляем паузу, чтобы синхронизация групп тоже могла принять."""
+        log.info("Слушаю входящие %s через HTTP", identifier)
+        backoff = _RECONNECT_MIN
+        while not self._stop.is_set():
+            await self._receive_allowed.wait()
+            if self._stop.is_set():
+                break
+            async with self._receive_state:
+                if not self._receive_allowed.is_set():
+                    continue
+                self._active_receives += 1
+                self._receive_idle.clear()
+            failed = False
+            batch: list[dict] = []
+            try:
+                batch = await self.backend.receive_batch(identifier, timeout=1)
+                backoff = _RECONNECT_MIN
+                for item in batch:
+                    await self._on_message(account_id, json.dumps(item))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - переподключаемся при любой ошибке сети
+                failed = True
+                log.warning("Приём %s оборвался: %s", identifier, exc)
+            finally:
+                async with self._receive_state:
+                    self._active_receives -= 1
+                    if self._active_receives == 0:
+                        self._receive_idle.set()
+            if failed:
+                if self._stop.is_set():
+                    break
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, _RECONNECT_MAX)
+                continue
+            if self._stop.is_set():
+                break
+            await asyncio.sleep(0.2 if batch else 1.0)
 
     async def _on_message(self, account_id: int, raw: str | bytes) -> None:
         """Разбирает одно входящее событие, сохраняет и проверяет стоп-слова."""

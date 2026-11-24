@@ -14,6 +14,7 @@ from app.db import SessionLocal
 from app.models import Campaign, utcnow
 from app.services import audit, broadcaster
 from app.services import groups as groups_service
+from app.services.inbox import inbox
 from app.signal import get_backend
 
 log = logging.getLogger(__name__)
@@ -52,11 +53,14 @@ async def _auto_accept_groups() -> None:
     except ValueError as exc:
         log.error("Автоприём пропущен: %s", exc)
         return
+    await inbox.suspend_receive()
     try:
         async with SessionLocal() as session:
             await groups_service.sync_linked_accounts(session, backend)
     except Exception:
         log.exception("Автоприём приглашений не удался")
+    finally:
+        inbox.resume_receive()
 
 
 def _ensure_auto_accept() -> None:
