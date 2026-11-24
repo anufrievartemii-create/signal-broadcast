@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Рассылки — signal-broadcast{% endblock %}
+{% block content %}
+<div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+  <h1 class="text-xl font-bold">Рассылки</h1>
+  <a href="/campaigns/new" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700">+ Новая рассылка</a>
+</div>
+
+<form hx-get="/campaigns" hx-target="#campaignsTable" hx-swap="innerHTML" class="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
+  <input name="account_id" value="{{ selected_account or '' }}" class="border border-gray-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none">
+  <select name="status" class="border border-gray-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none">
+    <option value="">Любой статус</option>
+    <option value="draft" {% if status_filter=='draft' %}selected{% endif %}>Черновик</option>
+    <option value="scheduled" {% if status_filter=='scheduled' %}selected{% endif %}>Запланировано</option>
+    <option value="running" {% if status_filter=='running' %}selected{% endif %}>Выполняется</option>
+    <option value="paused" {% if status_filter=='paused' %}selected{% endif %}>На паузе</option>
+    <option value="done" {% if status_filter=='done' %}selected{% endif %}>Завершено</option>
+    <option value="failed" {% if status_filter=='failed' %}selected{% endif %}>Ошибка</option>
+    <option value="aborted" {% if status_filter=='aborted' %}selected{% endif %}>Остановлено</option>
+  </select>
+  <button type="submit" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700">Фильтр</button>
+  <a href="/campaigns" class="px-3 py-2 text-sm border border-gray-300 rounded hover:bg-gray-50">сброс</a>
+</form>
+
+<table id="campaignsTable" class="w-full text-sm divide-y divide-gray-100 bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+  <thead>
+    <tr class="bg-gray-50">
+      <th class="p-3 text-left text-xs font-semibold text-gray-500">Название</th>
+      <th class="p-3 text-left text-xs font-semibold text-gray-500 w-20">Аккаунт</th>
+      <th class="p-3 text-left text-xs font-semibold text-gray-500 w-24">Статус</th>
+      <th class="p-3 text-left text-xs font-semibold text-gray-500 w-16">Всего</th>
+      <th class="p-3 text-left text-xs font-semibold text-gray-500 w-16">Отправлено</th>
+      <th class="p-3 text-left text-xs font-semibold text-gray-500 w-16">Ошибок</th>
+      <th class="p-3 text-left text-xs font-semibold text-gray-500 w-32">Действия</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for c in campaigns %}
+    <tr class="hover:bg-gray-50">
+      <td class="p-3">
+        <div class="font-medium">{{ c.name }}</div>
+        <div class="text-xs text-gray-500">{{ c.schedule_at.strftime('%Y-%m-%d %H:%M') if c.schedule_at else 'без расписания' }}</div>
+      </td>
+      <td class="p-3 text-xs">{{ c.account_id }}</td>
+      <td class="p-3">
+        <span class="inline-block px-2 py-0.5 rounded-full text-xs {{ 'bg-green-100 text-green-700' if c.status=='done' else 'bg-indigo-100 text-indigo-700' if c.status=='running' else 'bg-yellow-100 text-yellow-700' if c.status=='paused' else 'bg-gray-100 text-gray-600' }}">{{ c.status }}</span>
+      </td>
+      <td class="p-3 text-center">{{ c.counts.total if c.counts else 0 }}</td>
+      <td class="p-3 text-center text-green-600">{{ c.counts.sent if c.counts else 0 }}</td>
+      <td class="p-3 text-center text-red-600">{{ c.counts.failed if c.counts else 0 }}</td>
+      <td class="p-3">
+        {% if c.status in ('draft','failed','aborted','done') %}
+        <a href="/run/{{ c.id }}" class="text-xs text-indigo-600 hover:underline">смотреть</a>
+        {% endif %}
+        {% if c.status != 'running' %}
+        <button hx-post="/api/campaigns/{{ c.id }}/start" hx-target="closest tr" hx-swap="outerHTML" class="text-xs bg-green-600 text-white px-2 py-1 rounded hover:bg-green-700 disabled:opacity-50">Запустить</button>
+        {% endif %}
+        {% if c.status == 'running' %}
+        <button hx-post="/api/campaigns/{{ c.id }}/pause" hx-target="closest tr" hx-swap="outerHTML" class="text-xs bg-yellow-600 text-white px-2 py-1 rounded hover:bg-yellow-700">Пауза</button>
+        <button hx-post="/api/campaigns/{{ c.id }}/abort" hx-target="closest tr" hx-swap="outerHTML" class="text-xs bg-red-600 text-white px-2 py-1 rounded hover:bg-red-700">Стоп</button>
+        {% endif %}
+        {% if c.status == 'failed' or (c.counts and c.counts.failed) %}
+        <button hx-post="/api/campaigns/{{ c.id }}/retry" hx-target="closest tr" hx-swap="outerHTML" class="text-xs text-indigo-600 hover:underline mt-1">Повтор ошибок</button>
+        {% endif %}
+        <a href="/api/campaigns/{{ c.id }}/export" class="text-xs text-gray-500 hover:underline mt-1">CSV</a>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td class="p-4 text-center text-gray-500" colspan="7">Рассылок нет. Создайте первую.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

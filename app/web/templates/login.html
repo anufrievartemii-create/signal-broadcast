@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Вход — signal-broadcast{% endblock %}
+{% block content %}
+<div class="max-w-md mx-auto mt-10">
+  <div class="bg-white p-8 rounded-xl shadow border border-gray-200">
+    <h1 class="text-2xl font-bold mb-6">Вход в панель</h1>
+    {% if error %}
+    <div class="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-800 text-sm">{{ error }}</div>
+    {% endif %}
+    {% if auth_required %}
+    <form action="/login" method="post" class="space-y-4">
+      <label class="block text-sm font-medium">Токен доступа (из .env, ADMIN_TOKEN)</label>
+      <input name="token" type="password" required class="w-full border border-gray-300 rounded px-3 py-2 focus:ring-2 focus:ring-indigo-500 outline-none">
+      <button type="submit" class="w-full bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700">Войти</button>
+    </form>
+    {% else %}
+    <div class="text-sm text-gray-500">Авторизация выключена (ADMIN_TOKEN не задан в .env). <a href="/" class="text-indigo-600">Перейти на дашборд</a>.</div>
+    {% endif %}
+  </div>
+  <p class="mt-4 text-sm text-gray-500">Это локальная панель управления рассылками Signal. Храните токен в секрете.</p>
+</div>
+{% endblock %}

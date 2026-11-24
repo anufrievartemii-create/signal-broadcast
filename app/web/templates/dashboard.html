@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Дашборд — signal-broadcast{% endblock %}
+{% block content %}
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+  <div class="bg-white p-5 rounded-lg shadow border border-gray-200">
+    <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">Бэкенд Signal</div>
+    <div class="text-xl font-semibold {{ 'text-green-600' if healthy else 'text-red-600' }}">{{ 'Работает' if healthy else 'Недоступен' }} · {{ backend_name }}</div>
+  </div>
+  <div class="bg-white p-5 rounded-lg shadow border border-gray-200">
+    <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">Аккаунты</div>
+    <div class="text-xl font-semibold">{{ linked_count }} из {{ accounts|length }} связаны</div>
+  </div>
+  <div class="bg-white p-5 rounded-lg shadow border border-gray-200">
+    <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">Группы</div>
+    <div class="text-xl font-semibold">{{ group_stats.active }} активных из {{ group_stats.total }}</div>
+  </div>
+  <div class="bg-white p-5 rounded-lg shadow border border-gray-200">
+    <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">За сегодня отправлено</div>
+    <div class="text-xl font-semibold text-indigo-600">{{ daily_sent }}</div>
+  </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+  <!-- Аккаунты -->
+  <div class="lg:col-span-1 bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+    <div class="p-4 border-b border-gray-200 flex items-center justify-between">
+      <h2 class="font-semibold">Аккаунты</h2>
+      <a href="/accounts" class="text-xs text-indigo-600 hover:underline">все</a>
+    </div>
+    <div class="divide-y divide-gray-100">
+      {% for a in accounts %}
+      <div class="p-3 flex items-center justify-between hover:bg-gray-50">
+        <div>
+          <div class="text-sm font-medium">{{ a.label or a.identifier }}</div>
+          <div class="text-xs text-gray-500">{{ a.identifier }}</div>
+        </div>
+        <span class="inline-block px-2 py-0.5 rounded-full text-xs {{ 'bg-green-100 text-green-700' if a.status=='linked' else 'bg-gray-100 text-gray-600' }}">{{ a.status }}</span>
+      </div>
+      {% else %}
+      <div class="p-3 text-xs text-gray-500 text-center">Аккаунтов нет</div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Кампании -->
+  <div class="lg:col-span-2 bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+    <div class="p-4 border-b border-gray-200 flex items-center justify-between">
+      <h2 class="font-semibold">Недавние рассылки</h2>
+      <a href="/campaigns" class="text-xs text-indigo-600 hover:underline">все</a>
+    </div>
+    <div class="divide-y divide-gray-100">
+      {% for c in campaigns[:5] %}
+      <div class="p-3 flex items-center justify-between hover:bg-gray-50">
+        <div>
+          <div class="text-sm font-medium">{{ c.name }}</div>
+          <div class="text-xs text-gray-500">статус: {{ c.status }} · создано {{ c.created_at | fmt_dt }}</div>
+        </div>
+        <span class="text-sm font-mono text-gray-700">{{ c.status }}</span>
+      </div>
+      {% else %}
+      <div class="p-3 text-xs text-gray-500 text-center">Рассылок нет</div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Прогон + логи -->
+  <div class="lg:col-span-1 bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+    <div class="p-4 border-b border-gray-200 font-semibold">Активные прогоны</div>
+    <div class="p-3 space-y-2">
+      {% for run in runs if run.state in ('running','paused') %}
+      <div class="text-xs space-y-1">
+        <div class="font-medium">Кампания #{{ run.campaign_id }}</div>
+        <div class="text-gray-600">{{ run.state }} — {{ run.processed }} / {{ run.total }} ({{ run.percent }}%)</div>
+      </div>
+      {% else %}
+      <div class="text-xs text-gray-500 text-center">Нет активных</div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<div class="mt-6 bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+  <div class="p-4 border-b border-gray-200 font-semibold">Последние действия</div>
+  <div class="divide-y divide-gray-50 max-h-64 overflow-y-auto p-3 text-xs">
+    {% for log in logs %}
+    <div class="flex justify-between">
+      <span class="text-gray-500">{{ log.ts | fmt_dt }}</span>
+      <span>{{ log.action }} {% if log.detail %}{{ log.detail }}{% endif %}</span>
+    </div>
+    {% else %}
+    <div class="text-gray-400 text-center py-2">Записей нет</div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

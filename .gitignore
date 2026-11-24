@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# Секреты и конфиг
+.env
+
+# Ключи и данные Signal (криптоключи аккаунтов!) — НЕ коммитить
+signal-cli-config/
+
+# Локальные данные приложения
+data/
+*.db
+*.db-journal
+*.sqlite3
+logs/
+uvicorn.err
+uvicorn.out
+
+# IDE / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

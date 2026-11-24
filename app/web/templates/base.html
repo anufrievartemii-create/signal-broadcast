@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}signal-broadcast{% endblock %}</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
+</head>
+<body class="bg-gray-50 text-gray-900">
+<nav class="bg-white border-b border-gray-200 sticky top-0 z-20">
+  <div class="max-w-4xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+    <a href="/" class="font-bold text-indigo-700 hover:text-indigo-900">signal-broadcast</a>
+    <div class="hidden md:flex gap-6 text-sm font-medium">
+      <a href="/" class="px-2 py-1 {% if active == 'dashboard' %}bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600{% else %}text-gray-600 hover:text-indigo-600{% endif %}">Дашборд</a>
+      <a href="/accounts" class="px-2 py-1 {% if active == 'accounts' %}bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600{% else %}text-gray-600 hover:text-indigo-600{% endif %}">Аккаунты</a>
+      <a href="/groups" class="px-2 py-1 {% if active == 'groups' %}bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600{% else %}text-gray-600 hover:text-indigo-600{% endif %}">Группы</a>
+      <a href="/campaigns" class="px-2 py-1 {% if active == 'campaigns' %}bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600{% else %}text-gray-600 hover:text-indigo-600{% endif %}">Рассылки</a>
+    </div>
+    <div class="flex items-center gap-2">
+      {% if settings.admin_token %}
+      <a href="/logout" class="px-3 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50">Выход</a>
+      {% else %}
+      <a href="/login" class="px-3 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50">Войти</a>
+      {% endif %}
+    </div>
+  </div>
+</nav>
+
+<main class="max-w-5xl mx-auto px-4 py-6">
+  {% block flash %}
+  {% if ok %}<div class="mb-4 p-3 bg-green-50 border border-green-200 rounded text-green-800 text-sm">{{ ok }}</div>{% endif %}
+  {% if err %}<div class="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-800 text-sm">{{ err }}</div>{% endif %}
+  {% endblock %}
+
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="border-t border-gray-200 bg-white px-4 py-6 mt-12 text-xs text-gray-500">
+  signal-broadcast v{{ app_version }} · бэкенд: {{ backend_name }} · API Signal: {{ settings.signal_api_url }}
+</footer>
+</body>
+</html>

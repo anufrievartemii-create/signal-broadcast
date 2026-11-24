@@ -1,0 +1,25 @@
+services:
+  signal-cli-rest-api:
+    image: bbernhard/signal-cli-rest-api:latest
+    container_name: signal-cli-rest-api
+    user: "1000:1000"
+    environment:
+      # native = signal-cli без JVM (меньше памяти). Альтернативы: normal, json-rpc
+      - MODE=native
+      - LOG_LEVEL=info
+      # регулярный приём сообщений, чтобы группы/таймеры не "протухали"
+      - AUTO_RECEIVE_SCHEDULE=0 * * * *
+      - AUTO_RECEIVE_SCHEDULE_IGNORE_ATTACHMENTS=true
+      - AUTO_RECEIVE_SCHEDULE_IGNORE_STORIES=true
+      - AUTO_RECEIVE_SCHEDULE_IGNORE_STICKERS=true
+    ports:
+      # публикуем только в loopback: наружу API не должно быть видно
+      - "127.0.0.1:8080:8080"
+    volumes:
+      # здесь лежат пароль и криптоключи аккаунтов — каталог в .gitignore
+      - "./signal-cli-config:/home/.local/share/signal-cli"
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /run:exec,size=64m,uid=1000,gid=1000,mode=0755
