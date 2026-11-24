@@ -2,10 +2,13 @@ import asyncio
 import json
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app.config import settings
 from app.db import SessionLocal, engine, init_db, dispose_engine
+from app.main import app
 from app.models import Base
+from app.routers.deps import COOKIE_NAME
 from app.signal import reset_backend_cache
 from app.signal.base import SignalBackend
 from app.signal.fake import FakeBackend
@@ -69,6 +72,23 @@ def test_render_missing_strict():
 
 def test_extract_variables():
     assert extract_variables("{{a}} {{b}} {{a}}") == ["a", "b"]
+
+
+def test_accounts_page_renders():
+    """GET /accounts returns the accounts page.
+
+    base.html must use the app_settings global. The accounts route does not
+    put a settings object in the template context, and that used to raise
+    UndefinedError while rendering.
+    """
+    with TestClient(app) as client:
+        if settings.admin_token:
+            client.cookies.set(COOKIE_NAME, settings.admin_token)
+        response = client.get("/accounts", headers={"accept": "text/html"})
+    assert response.status_code == 200
+    assert "Список аккаунтов" in response.text
+    assert "Привязать аккаунт" in response.text
+    assert "Internal Server Error" not in response.text
 
 
 @pytest.mark.asyncio
