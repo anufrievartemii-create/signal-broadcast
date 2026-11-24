@@ -144,7 +144,9 @@ async def remove_account(
             await backend.unregister(identifier, delete_account=delete_remote)
         except Exception as exc:  # noqa: BLE001 - удаление из БД важнее ответа бэкенда
             log.warning("unregister %s не удался: %s", identifier, exc)
-    await audit.record(session, "accounts.remove", f"{identifier} (remote={delete_remote})")
+    await audit.record(
+        session, "accounts.remove", f"{identifier} (remote={delete_remote})", commit=False
+    )
     await session.delete(account)
     await session.commit()
     return True

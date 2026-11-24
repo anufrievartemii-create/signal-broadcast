@@ -108,7 +108,11 @@ def _first_present_list(item: dict, *keys: str) -> list[str]:
 
 
 def group_from_payload(item: dict) -> GroupInfo | None:
-    """GroupInfo из ответа listGroups / GET /v1/groups."""
+    """GroupInfo из ответа listGroups / GET /v1/groups.
+
+    REST API (bbernhard) отдаёт `member` / `pending_invites`,
+    json-rpc/signal-cli — `isMember` / `pendingMembers`.
+    """
     gid = item.get("id") or item.get("groupId") or ""
     if not gid:
         return None
@@ -116,6 +120,8 @@ def group_from_payload(item: dict) -> GroupInfo | None:
         is_member = bool(item.get("isMember"))
     elif "is_member" in item:
         is_member = bool(item.get("is_member"))
+    elif "member" in item:
+        is_member = bool(item.get("member"))
     else:
         is_member = True
     return GroupInfo(
@@ -129,8 +135,8 @@ def group_from_payload(item: dict) -> GroupInfo | None:
             item,
             "pendingMembers",
             "pending_members",
-            "pending_requests",
-            "pendingRequests",
+            "pending_invites",
+            "pendingInvites",
         ),
         raw=item,
     )
