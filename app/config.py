@@ -34,12 +34,12 @@ class Settings(BaseSettings):
     # --- База ---
     database_url: str = f"sqlite+aiosqlite:///{(PROJECT_ROOT / 'data' / 'app.db').as_posix()}"
 
-    # --- Защита от бана: лимиты рассылки ---
-    delay_min: float = 3.0
-    delay_max: float = 8.0
-    max_retries: int = 3
-    hourly_cap: int = 120
-    daily_cap: int = 500
+    # --- Темп рассылки (throughput): короткие паузы, высокие лимиты ---
+    delay_min: float = 0.4
+    delay_max: float = 1.2
+    max_retries: int = 2
+    hourly_cap: int = 600
+    daily_cap: int = 4000
 
     # --- Входящие / отписки ---
     stop_words: str = "стоп,stop,отписка,unsubscribe"

@@ -29,11 +29,11 @@ EDITABLE_KEYS: tuple[str, ...] = FLOAT_KEYS + INT_KEYS + BOOL_KEYS + STR_KEYS
 class Effective:
     """Итоговые (эффективные) настройки рассылки."""
 
-    delay_min: float = 3.0
-    delay_max: float = 8.0
-    max_retries: int = 3
-    hourly_cap: int = 120
-    daily_cap: int = 500
+    delay_min: float = 0.4
+    delay_max: float = 1.2
+    max_retries: int = 2
+    hourly_cap: int = 600
+    daily_cap: int = 4000
     auto_opt_out: bool = True
     stop_words: list[str] = field(default_factory=list)
 

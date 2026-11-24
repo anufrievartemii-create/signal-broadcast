@@ -225,6 +225,15 @@ async def sent_counts(session, account_id: int) -> tuple[int, int]:
     return int(hourly), int(daily)
 
 
+def delay_range(campaign: Campaign, eff: settings_store.Effective) -> tuple[float, float]:
+    """Пауза между отправками: значения кампании, иначе глобальные настройки."""
+    lo = campaign.delay_min if campaign.delay_min is not None else eff.delay_min
+    hi = campaign.delay_max if campaign.delay_max is not None else eff.delay_max
+    if hi < lo:
+        lo, hi = hi, lo
+    return max(0.0, float(lo)), max(0.0, float(hi))
+
+
 async def caps_reason(session, campaign: Campaign, eff: settings_store.Effective) -> str | None:
     """Причина остановки по лимиту (или None, если лимиты не выбраны)."""
     hourly_cap = campaign.hourly_cap if campaign.hourly_cap is not None else eff.hourly_cap
@@ -386,7 +395,7 @@ async def _deliver(
             return False, str(exc)
         except SignalRateLimited as exc:
             item.error = str(exc)
-            wait = min(300.0, 30.0 * attempt)
+            wait = min(45.0, 8.0 * attempt)
             run.publish({"type": "log", "text": f"Rate limit, пауза {wait:.0f} с: {exc}"})
             await _interruptible_sleep(run, wait)
             if run.abort_event.is_set():
@@ -399,7 +408,7 @@ async def _deliver(
                 item.status = "failed"
                 run.publish({"type": "log", "text": f"Исчерпаны попытки для {item.group_name}: {exc}"})
                 return False, str(exc)
-            wait = min(60.0, 2.0**attempt)
+            wait = min(20.0, 1.5**attempt)
             run.publish(
                 {"type": "log", "text": f"Ошибка ({attempt}/{max_attempts}) {item.group_name}, ретрай {wait:.0f} с"}
             )
@@ -494,11 +503,12 @@ async def _run(campaign_id: int, targets_by_gid: dict[str, Group]) -> None:
             run.skipped = len([i for i in all_items if i.status == "skipped"])
             run.failed = 0
             run.processed = run.sent + run.skipped
+            pace_lo, pace_hi = delay_range(campaign, eff)
             run.publish(
                 {
                     "type": "log",
                     "text": (
-                        f"Старт: получателей {len(pending)}, задержка {eff.delay_min:.1f}-{eff.delay_max:.1f} с, "
+                        f"Старт: получателей {len(pending)}, задержка {pace_lo:.1f}-{pace_hi:.1f} с, "
                         f"вложений {len(base64_attachments)}, dry_run={campaign.dry_run}"
                     ),
                 }
@@ -619,9 +629,9 @@ async def _run_loop(
         )
         run.publish({"type": "progress", **run.snapshot()})
 
-        # случайная задержка между группами — обязательная защита от антиспам-фильтров
         if index < last and not run.abort_event.is_set() and not campaign.dry_run:
-            await _interruptible_sleep(run, random.uniform(eff.delay_min, eff.delay_max))
+            pace_lo, pace_hi = delay_range(campaign, eff)
+            await _interruptible_sleep(run, random.uniform(pace_lo, pace_hi))
 
     run.current = None
     run.state = "finished"

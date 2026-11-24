@@ -126,8 +126,8 @@ class Campaign(Base):
     status: Mapped[str] = mapped_column(String(20), default="draft", index=True)
 
     schedule_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    delay_min: Mapped[float] = mapped_column(Float, default=3.0)
-    delay_max: Mapped[float] = mapped_column(Float, default=8.0)
+    delay_min: Mapped[float] = mapped_column(Float, default=0.4)
+    delay_max: Mapped[float] = mapped_column(Float, default=1.2)
     hourly_cap: Mapped[int | None] = mapped_column(Integer)
     daily_cap: Mapped[int | None] = mapped_column(Integer)
     dry_run: Mapped[bool] = mapped_column(Boolean, default=False)

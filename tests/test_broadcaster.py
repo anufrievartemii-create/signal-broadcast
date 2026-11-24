@@ -76,6 +76,21 @@ def test_extract_variables():
     assert extract_variables("{{a}} {{b}} {{a}}") == ["a", "b"]
 
 
+def test_delay_range_prefers_campaign_then_settings():
+    from app.models import Campaign
+    from app.services.settings_store import Effective
+
+    eff = Effective(delay_min=0.4, delay_max=1.2)
+    camp = Campaign(name="x", account_id=1, body_template="hi", delay_min=0.4, delay_max=1.2)
+    assert broadcaster.delay_range(camp, eff) == (0.4, 1.2)
+    camp.delay_min = 0.0
+    camp.delay_max = 0.0
+    assert broadcaster.delay_range(camp, eff) == (0.0, 0.0)
+    camp.delay_min = 2.0
+    camp.delay_max = 0.5
+    assert broadcaster.delay_range(camp, eff) == (0.5, 2.0)
+
+
 def test_accounts_page_renders():
     """GET /accounts returns the accounts page.
 
@@ -208,8 +223,15 @@ async def test_pause_resume(fake_backend):
         acc = Account(number="+10000000001", status="linked", backend="fake")
         session.add(acc)
         await session.commit()
-        camp = Campaign(name="Пауза", account_id=acc.id, body_template="x", status="draft",
-                        target_json='{"mode": "all_active", "group_ids": [], "tags": []}')
+        camp = Campaign(
+            name="Пауза",
+            account_id=acc.id,
+            body_template="x",
+            status="draft",
+            delay_min=2.0,
+            delay_max=3.0,
+            target_json='{"mode": "all_active", "group_ids": [], "tags": []}',
+        )
         session.add(camp)
         await session.commit()
         for gid in ("group.P1==", "group.P2=="):
