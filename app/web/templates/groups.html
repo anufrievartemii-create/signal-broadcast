@@ -14,7 +14,7 @@
           <option value="{{ a.id }}" {% if selected_account==a.id %}selected{% endif %}>{{ a.label or a.identifier }}</option>
           {% endfor %}
         </select>
-        <input name="search" value="{{ search }}" placeholder="Поиск по названию" class="border border-gray-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none">
+        <input name="search" value="{{ search }}" placeholder="Поиск: название, Group ID, тег" class="border border-gray-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none">
         <select name="tag" class="border border-gray-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none">
           <option value="">Все теги</option>
           {% for t in tags %}<option value="{{ t }}" {% if tag_filter==t %}selected{% endif %}>{{ t }}</option>{% endfor %}
@@ -24,7 +24,7 @@
         <a href="/groups" class="px-3 py-2 text-sm border border-gray-300 rounded hover:bg-gray-50">сброс</a>
       </form>
 
-      <p class="text-xs text-gray-500 mt-3">Приглашения в группы принимаются автоматически: аккаунт вступает в группу, и она появляется в этом списке.</p>
+      <p class="text-xs text-gray-500 mt-3">Приглашения принимаются автоматически. Можно создать новую группу или вступить по Group ID, если Signal уже пригласил этот аккаунт. Поиск фильтрует по названию, идентификатору и тегам.</p>
       <div class="flex justify-between items-end mb-2">
         <form method="post" action="/groups/sync">
           {% if selected_account %}<input type="hidden" name="account_id" value="{{ selected_account }}">{% endif %}
@@ -46,7 +46,7 @@
         </thead>
         <tbody>
           {% for g in groups %}
-          <tr class="hover:bg-gray-50">
+          <tr class="hover:bg-gray-50 group-row" data-search="{{ (g.name ~ ' ' ~ g.group_id ~ ' ' ~ (g.tags or ''))|lower }}">
             <td class="p-2"><input type="checkbox" name="group_ids" value="{{ g.id }}" class="groupRow"></td>
             <td class="p-2">{{ g.name }}</td>
             <td class="p-2 text-xs font-mono text-gray-500 truncate max-w-xs">{{ g.group_id }}</td>
@@ -76,7 +76,45 @@
     </div>
   </div>
 
-  <div class="lg:w-1/3">
+  <div class="lg:w-1/3 space-y-4">
+    <div class="bg-white p-4 rounded-lg shadow border border-gray-200 space-y-3">
+      <h2 class="font-semibold">Добавить группу</h2>
+      <form method="post" action="/groups/add" class="space-y-2">
+        <select name="account_id" required class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+          {% for a in accounts %}
+          <option value="{{ a.id }}" {% if selected_account==a.id %}selected{% endif %}>{{ a.label or a.identifier }}</option>
+          {% endfor %}
+        </select>
+        <label class="flex items-center gap-2 text-xs"><input type="radio" name="action" value="create" checked> Создать новую в Signal</label>
+        <label class="flex items-center gap-2 text-xs"><input type="radio" name="action" value="join"> Вступить / найти по Group ID</label>
+        <input name="name" placeholder="Название (для создания)" class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+        <input name="group_id" placeholder="Group ID (для вступления)" class="w-full border border-gray-300 rounded px-3 py-2 text-sm font-mono">
+        <textarea name="members" rows="2" placeholder="Участники E.164, через запятую (необязательно)" class="w-full border border-gray-300 rounded px-3 py-2 text-sm"></textarea>
+        <input name="description" placeholder="Описание" class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+        <button type="submit" class="w-full bg-indigo-600 text-white px-3 py-2 rounded hover:bg-indigo-700 text-sm">Добавить</button>
+      </form>
+      <p class="text-xs text-gray-500">Вступление по ID срабатывает, если аккаунт уже приглашён. Ссылка-приглашение Signal здесь не разбирается — нужен сам Group ID из списка или клиента.</p>
+    </div>
+    <div class="bg-white p-4 rounded-lg shadow border border-gray-200 space-y-3">
+      <h2 class="font-semibold">Контакты (личные сообщения)</h2>
+      <form method="post" action="/contacts/add" class="space-y-2">
+        <select name="account_id" required class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+          {% for a in accounts %}
+          <option value="{{ a.id }}" {% if selected_account==a.id %}selected{% endif %}>{{ a.label or a.identifier }}</option>
+          {% endfor %}
+        </select>
+        <input name="name" placeholder="Имя" class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+        <input name="number" required placeholder="+79001234567" class="w-full border border-gray-300 rounded px-3 py-2 text-sm">
+        <button type="submit" class="w-full border border-indigo-600 text-indigo-700 px-3 py-2 rounded hover:bg-indigo-50 text-sm">Сохранить контакт</button>
+      </form>
+      <ul class="text-xs space-y-1 max-h-40 overflow-y-auto">
+        {% for c in contacts %}
+        <li>{{ c.name or 'без имени' }} <span class="font-mono text-gray-500">{{ c.number }}</span></li>
+        {% else %}
+        <li class="text-gray-400 italic">Контактов нет</li>
+        {% endfor %}
+      </ul>
+    </div>
     <div class="bg-white p-4 rounded-lg shadow border border-gray-200 space-y-3">
       <h2 class="font-semibold">Фильтры</h2>
       <div class="space-y-2">
@@ -97,6 +135,13 @@
   document.getElementById('bulkForm')?.addEventListener('submit', () => {
     const ids = [...document.querySelectorAll('input.groupRow:checked')].map(cb => cb.value);
     document.getElementById('bulkIds').value = ids.join(',');
+  });
+  document.querySelector('input[name="search"]')?.addEventListener('input', (e) => {
+    const q = (e.target.value || '').toLowerCase().trim();
+    document.querySelectorAll('tr.group-row').forEach((row) => {
+      const hay = row.getAttribute('data-search') || '';
+      row.style.display = !q || hay.includes(q) ? '' : 'none';
+    });
   });
 </script>
 {% endblock %}

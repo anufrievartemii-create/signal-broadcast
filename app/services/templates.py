@@ -110,7 +110,7 @@ def preview_for_groups(
 
 def check_variables(text: str, extra_vars: dict[str, str] | None = None) -> list[str]:
     """Переменные шаблона, которые НЕ покрываются автоматически и не заданы вручную."""
-    known_prefixes = ("date", "time", "datetime", "year", "month", "day", "group.", "account.")
+    known_prefixes = ("date", "time", "datetime", "year", "month", "day", "group.", "account.", "contact.")
     manual = set(extra_vars or {})
     return [
         var

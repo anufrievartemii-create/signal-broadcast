@@ -197,8 +197,21 @@ class SignalBackend(Protocol):
     async def pull_messages(self, identifier: str) -> None:
         """Забирает входящие, чтобы приглашения в группы появились в list_groups."""
 
+    async def receive_batch(self, identifier: str, *, timeout: float = 1.0) -> list[dict]:
+        """Входящие конверты за timeout секунд. Пустой список, если ничего не пришло."""
+
     async def accept_group_invite(self, identifier: str, group_id: str) -> None:
         """Принимает уже существующее приглашение в группу. Повторный вызов не ошибка."""
+
+    async def create_group(
+        self,
+        identifier: str,
+        name: str,
+        *,
+        members: list[str] | None = None,
+        description: str = "",
+    ) -> GroupInfo:
+        """Создаёт новую группу Signal. Аккаунт становится участником (и обычно админом)."""
 
     async def send(
         self,

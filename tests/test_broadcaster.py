@@ -16,6 +16,7 @@ from app.services.inbox import is_group_membership_event
 from app.services import broadcaster
 from app.services import accounts as accounts_service
 from app.services import campaigns as campaigns_service
+from app.services import contacts as contacts_service
 from app.services import groups as groups_service
 from app.services import settings_store
 from app.services.templates import render, build_context, extract_variables, TemplateError
@@ -99,8 +100,10 @@ def test_groups_page_mentions_auto_accept():
             client.cookies.set(COOKIE_NAME, settings.admin_token)
         response = client.get("/groups", headers={"accept": "text/html"})
     assert response.status_code == 200
-    assert "Приглашения в группы принимаются автоматически" in response.text
+    assert "Приглашения принимаются автоматически" in response.text
     assert "Синхронизировать с Signal" in response.text
+    assert "Добавить группу" in response.text
+    assert "Контакты (личные сообщения)" in response.text
 
 
 def test_membership_event_is_not_a_chat_message():
@@ -238,4 +241,69 @@ async def test_pause_resume(fake_backend):
         statuses = {it.group_gid: it.status for it in items}
         assert statuses.get("group.P1==") == "sent"
         assert statuses.get("group.P2==") == "sent"
+
+
+@pytest.mark.asyncio
+async def test_create_group_and_search(fake_backend):
+    async with SessionLocal() as session:
+        acc = Account(number="+10000000001", status="linked", backend="fake")
+        session.add(acc)
+        await session.commit()
+        await session.refresh(acc)
+        created = await groups_service.create_signal_group(
+            session, fake_backend, acc, name="Новый клуб", members=["+19990001122"]
+        )
+        assert created.name == "Новый клуб"
+        found = await groups_service.list_groups(session, account_id=acc.id, search="клуб")
+        assert any(g.group_id == created.group_id for g in found)
+        by_id = await groups_service.list_groups(session, account_id=acc.id, search=created.group_id[:8])
+        assert len(by_id) >= 1
+
+
+@pytest.mark.asyncio
+async def test_plan_and_send_direct(fake_backend):
+    from app.models import Campaign
+    from app.schemas import ContactForm
+
+    async with SessionLocal() as session:
+        acc = Account(number="+10000000001", status="linked", backend="fake")
+        session.add(acc)
+        await session.commit()
+        await session.refresh(acc)
+        await contacts_service.create_contact(
+            session, ContactForm(account_id=acc.id, number="+79001112233", name="Иван")
+        )
+        camp = Campaign(
+            name="Лички",
+            account_id=acc.id,
+            body_template="Привет {{contact.name}}",
+            status="draft",
+            target_json='{"mode": "direct", "group_ids": [], "tags": [], "recipients": ["+79004445566"], "contact_ids": []}',
+        )
+        session.add(camp)
+        await session.commit()
+        await session.refresh(camp)
+        items, targets = await broadcaster.plan_items(session, camp)
+        assert targets == []
+        gids = {item.group_gid for item in items}
+        assert "+79004445566" in gids
+
+    run = await broadcaster.start_campaign(camp.id)
+    await asyncio.sleep(1.5)
+    broadcaster.abort_campaign(camp.id)
+    await asyncio.sleep(0.3)
+    async with SessionLocal() as s2:
+        items2 = await campaigns_service.list_items(s2, camp.id)
+        assert any(it.status == "sent" and it.group_gid == "+79004445566" for it in items2)
+    assert run.sent >= 1
+
+
+def test_campaign_form_has_direct_mode():
+    with TestClient(app) as client:
+        if settings.admin_token:
+            client.cookies.set(COOKIE_NAME, settings.admin_token)
+        response = client.get("/campaigns/new", headers={"accept": "text/html"})
+    assert response.status_code == 200
+    assert 'value="direct"' in response.text
+    assert "Личные сообщения" in response.text
 

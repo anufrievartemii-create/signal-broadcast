@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import assert_never
 
 from fastapi import APIRouter, Form, HTTPException, Path, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from app.config import settings
 from app.routers.deps import AuthDep, BackendDep, SessionDep
-from app.schemas import CampaignForm, GroupBulkForm, LinkForm, RegisterForm, VerifyForm
+from app.schemas import CampaignForm, ContactForm, GroupAddForm, GroupBulkForm, LinkForm, RegisterForm, VerifyForm
 from app.services import accounts as accounts_service
 from app.services import attachments as attachments_service
 from app.services import broadcaster, settings_store
 from app.services import campaigns as campaigns_service
+from app.services import contacts as contacts_service
 from app.services import groups as groups_service
 from app.services import inbox as inbox_service
 from app.signal.base import SignalError as SignalBackendError
@@ -155,6 +157,69 @@ async def api_list_groups(
             "stats": await groups_service.group_stats(session, account_id),
         }
     )
+
+
+@router.post("/groups/add")
+async def api_add_group(
+    session: SessionDep, backend: BackendDep, form: GroupAddForm, _auth: AuthDep
+) -> JSONResponse:
+    account = await accounts_service.get_by_id(session, form.account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="Аккаунт не найден")
+    if not account.identifier:
+        raise HTTPException(status_code=400, detail="Аккаунт не привязан к Signal")
+    try:
+        if form.action == "create":
+            group = await groups_service.create_signal_group(
+                session,
+                backend,
+                account,
+                name=form.name,
+                members=groups_service.parse_member_list(form.members),
+                description=form.description,
+            )
+        elif form.action == "join":
+            group = await groups_service.join_signal_group(session, backend, account, form.group_id)
+            if group is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Группа не найдена. Нужно приглашение и синхронизация с Signal.",
+                )
+        else:
+            assert_never(form.action)
+    except SignalBackendError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse({"id": group.id, "group_id": group.group_id, "name": group.name})
+
+
+@router.get("/contacts")
+async def api_list_contacts(
+    session: SessionDep,
+    account_id: int | None = None,
+    search: str | None = None,
+    _auth: AuthDep = None,
+) -> JSONResponse:
+    rows = await contacts_service.list_contacts(session, account_id=account_id, search=search)
+    return JSONResponse(
+        [
+            {
+                "id": c.id,
+                "account_id": c.account_id,
+                "number": c.number,
+                "name": c.name,
+                "active": c.active,
+            }
+            for c in rows
+        ]
+    )
+
+
+@router.post("/contacts")
+async def api_create_contact(session: SessionDep, form: ContactForm, _auth: AuthDep) -> JSONResponse:
+    contact = await contacts_service.create_contact(session, form)
+    return JSONResponse({"id": contact.id, "number": contact.number, "name": contact.name}, status_code=201)
 
 
 @router.post("/groups/bulk")

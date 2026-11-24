@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from urllib.parse import quote
 
@@ -67,6 +68,9 @@ class RestApiBackend:
         self.timeout = timeout
         self.device_name = device_name
         self._client: httpx.AsyncClient | None = None
+        # native signal-cli выполняет одну команду за раз. Параллельные receive и listGroups
+        # держат друг друга, клиент обрывает запрос по таймауту, а список групп ждёт минутами.
+        self._call_lock = asyncio.Lock()
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -115,13 +119,15 @@ class RestApiBackend:
         params: dict | None = None,
         timeout: float | None = None,
     ) -> httpx.Response:
-        try:
-            resp = await self.client.request(method, path, json=json, params=params, timeout=timeout)
-        except httpx.HTTPError as exc:
-            msg = f"Signal API недоступен ({self.base_url}{path}): {exc}"
-            raise SignalUnavailable(msg) from exc
-        self._raise_for_status(resp, method, path)
-        return resp
+        async with self._call_lock:
+            try:
+                resp = await self.client.request(method, path, json=json, params=params, timeout=timeout)
+            except httpx.HTTPError as exc:
+                detail = str(exc).strip() or type(exc).__name__
+                msg = f"Signal API недоступен ({self.base_url}{path}): {detail}"
+                raise SignalUnavailable(msg) from exc
+            self._raise_for_status(resp, method, path)
+            return resp
 
     @staticmethod
     def _json_or_empty(resp: httpx.Response):
@@ -228,24 +234,38 @@ class RestApiBackend:
                 groups.append(info)
         return groups
 
+    async def receive_batch(self, identifier: str, *, timeout: float = 1.0) -> list[dict]:
+        """GET /v1/receive/{number}.
+
+        В native и normal режиме это обычный HTTP-ответ со списком конвертов,
+        а не смена протокола на WebSocket.
+        """
+        resp = await self._request(
+            "GET",
+            f"/v1/receive/{_q(identifier)}",
+            params={
+                "timeout": str(max(1, int(timeout))),
+                "ignore_attachments": "true",
+                "ignore_stories": "true",
+                "ignore_stickers": "true",
+            },
+            timeout=max(8.0, timeout + 7.0),
+        )
+        data = self._json_or_empty(resp)
+        if isinstance(data, dict):
+            data = data.get("messages") or data.get("result") or []
+        if not isinstance(data, list):
+            return []
+        return [item for item in data if isinstance(item, dict)]
+
     async def pull_messages(self, identifier: str) -> None:
         """GET /v1/receive/{number}: без приёма signal-cli не видит новое приглашение.
 
-        В native-режиме это обычный GET. Если приём уже занят сокетом, ошибка
-        не фатальна — дальше всё равно читаем уже сохранённые группы.
+        Если приём уже занят другим запросом, ошибка не фатальна — дальше
+        всё равно читаем уже сохранённые группы.
         """
         try:
-            await self._request(
-                "GET",
-                f"/v1/receive/{_q(identifier)}",
-                params={
-                    "timeout": "1",
-                    "ignore_attachments": "true",
-                    "ignore_stories": "true",
-                    "ignore_stickers": "true",
-                },
-                timeout=8.0,
-            )
+            await self.receive_batch(identifier, timeout=1)
         except SignalError as exc:
             log.info("Приём сообщений %s пропущен: %s", identifier, exc)
 
@@ -264,6 +284,31 @@ class RestApiBackend:
                 log.info("Приглашение %s уже принято: %s", group_id[:24], exc)
                 return
             raise
+
+    async def create_group(
+        self,
+        identifier: str,
+        name: str,
+        *,
+        members: list[str] | None = None,
+        description: str = "",
+    ) -> GroupInfo:
+        """POST /v1/groups/{number} — создать группу."""
+        payload: dict = {"name": name, "members": list(members or [])}
+        if description:
+            payload["description"] = description
+        resp = await self._request("POST", f"/v1/groups/{_q(identifier)}", json=payload)
+        data = self._json_or_empty(resp)
+        if isinstance(data, str) and data.strip():
+            return GroupInfo(id=data.strip(), name=name, description=description, members=list(members or []), is_member=True)
+        if isinstance(data, dict):
+            info = group_from_payload(data)
+            if info is not None:
+                return info
+            gid = str(data.get("id") or data.get("groupId") or "")
+            if gid:
+                return GroupInfo(id=gid, name=name, description=description, members=list(members or []), is_member=True)
+        raise SignalError("Signal не вернул идентификатор созданной группы")
 
     # --- отправка --------------------------------------------------------------
 

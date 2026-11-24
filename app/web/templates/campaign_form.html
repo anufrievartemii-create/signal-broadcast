@@ -24,7 +24,7 @@
     <div>
       <label class="block text-xs font-medium text-gray-700 mb-1">Текст сообщения (шаблон)</label>
       <textarea name="body_template" rows="5" required class="w-full border border-gray-300 rounded px-3 py-2 font-mono text-sm focus:ring-2 focus:ring-indigo-500 outline-none">{{ form.body_template if form else '' }}</textarea>
-      <div class="mt-1 text-xs text-gray-500">Переменные: {% raw %}{{ group.name }}, {{ date }}, {{ time }}, {{ account.label }}{% endraw %}, и свои через форму.</div>
+      <div class="mt-1 text-xs text-gray-500">Переменные: {% raw %}{{ group.name }}, {{ contact.name }}, {{ contact.number }}, {{ date }}, {{ time }}, {{ account.label }}{% endraw %}.</div>
     </div>
 
     <div>
@@ -34,24 +34,41 @@
     </div>
 
     <div class="border-t border-gray-200 pt-4">
-      <h3 class="text-xs font-semibold text-gray-600 uppercase mb-3">Целевые группы</h3>
+      <h3 class="text-xs font-semibold text-gray-600 uppercase mb-3">Куда отправлять</h3>
       <div class="space-y-2">
-        <label class="flex items-center gap-2 text-sm"><input type="radio" name="target_mode" value="selected" checked> Выбранные вручную</label>
-        <label class="flex items-center gap-2 text-sm"><input type="radio" name="target_mode" value="tags"> По тегам</label>
+        <label class="flex items-center gap-2 text-sm"><input type="radio" name="target_mode" value="selected" checked> Выбранные группы</label>
+        <label class="flex items-center gap-2 text-sm"><input type="radio" name="target_mode" value="tags"> Группы по тегам</label>
         <label class="flex items-center gap-2 text-sm"><input type="radio" name="target_mode" value="all_active"> Все активные группы аккаунта</label>
+        <label class="flex items-center gap-2 text-sm"><input type="radio" name="target_mode" value="direct"> Личные сообщения (номера)</label>
       </div>
-      <div class="ml-3 border-t border-gray-100 pt-3">
+      <div id="groupsTarget" class="ml-3 border-t border-gray-100 pt-3">
         <p class="text-xs text-gray-500 mb-2">Выберите группы:</p>
+        <input type="search" id="groupPickerSearch" placeholder="Найти группу в списке" class="w-full mb-2 border border-gray-300 rounded px-3 py-1.5 text-sm">
         <div class="max-h-40 overflow-y-auto space-y-1 p-2 bg-gray-50 rounded border border-gray-100">
           {% for g in groups %}
-          <label class="flex items-center gap-2 text-xs block hover:bg-white">
+          <label class="flex items-center gap-2 text-xs block hover:bg-white group-pick" data-search="{{ (g.name ~ ' ' ~ g.group_id)|lower }}">
             <input type="checkbox" name="group_ids" value="{{ g.id }}" class="groupCheckbox">
             {{ g.name }} <span class="text-gray-400 font-mono text-[10px]">{{ g.group_id }}</span>
           </label>
           {% else %}
-          <div class="text-xs text-gray-400">Нет групп — сначала привяжите аккаунт и синхронизируйте группы.</div>
+          <div class="text-xs text-gray-400">Нет групп — создайте на странице «Группы» или синхронизируйте с Signal.</div>
           {% endfor %}
         </div>
+      </div>
+      <div id="directTarget" class="ml-3 border-t border-gray-100 pt-3 hidden">
+        <p class="text-xs text-gray-500 mb-2">Сохранённые контакты:</p>
+        <div class="max-h-32 overflow-y-auto space-y-1 p-2 bg-gray-50 rounded border border-gray-100 mb-2">
+          {% for c in contacts %}
+          <label class="flex items-center gap-2 text-xs">
+            <input type="checkbox" name="contact_ids" value="{{ c.id }}">
+            {{ c.name or 'без имени' }} <span class="font-mono text-gray-400">{{ c.number }}</span>
+          </label>
+          {% else %}
+          <div class="text-xs text-gray-400">Контактов нет — добавьте на странице «Группы» или вставьте номера ниже.</div>
+          {% endfor %}
+        </div>
+        <label class="block text-xs font-medium text-gray-700">Дополнительные номера (по одному или через запятую)</label>
+        <textarea name="recipients" rows="3" placeholder="+79001112233" class="w-full border border-gray-300 rounded px-3 py-2 font-mono text-sm"></textarea>
       </div>
       <div class="mt-2">
         <p class="text-xs text-gray-500 mb-2">Теги:</p>
@@ -96,4 +113,24 @@
     </div>
   </form>
 </div>
+<script>
+  function syncTargetMode() {
+    const mode = document.querySelector('input[name="target_mode"]:checked')?.value;
+    const groups = document.getElementById('groupsTarget');
+    const direct = document.getElementById('directTarget');
+    if (!groups || !direct) return;
+    const isDirect = mode === 'direct';
+    groups.classList.toggle('hidden', isDirect);
+    direct.classList.toggle('hidden', !isDirect);
+  }
+  document.querySelectorAll('input[name="target_mode"]').forEach((el) => el.addEventListener('change', syncTargetMode));
+  syncTargetMode();
+  document.getElementById('groupPickerSearch')?.addEventListener('input', (e) => {
+    const q = (e.target.value || '').toLowerCase().trim();
+    document.querySelectorAll('label.group-pick').forEach((row) => {
+      const hay = row.getAttribute('data-search') || '';
+      row.style.display = !q || hay.includes(q) ? '' : 'none';
+    });
+  });
+</script>
 {% endblock %}

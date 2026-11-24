@@ -187,15 +187,23 @@ class JsonRpcBackend:
                 groups.append(info)
         return groups
 
-    async def pull_messages(self, identifier: str) -> None:
-        """В режиме демона приём обычно уже идёт. Короткий receive — запасной путь."""
-        params: dict = {"timeout": 1}
+    async def receive_batch(self, identifier: str, *, timeout: float = 1.0) -> list[dict]:
+        """JSON-RPC receive. Пустой список, если демон уже принимает сообщения."""
+        params: dict = {"timeout": timeout}
         if identifier:
             params["account"] = identifier
         try:
-            await self._call("receive", params)
+            result = await self._call("receive", params)
         except SignalError as exc:
             log.info("Приём сообщений %s пропущен: %s", identifier, exc)
+            return []
+        if isinstance(result, list):
+            return [item for item in result if isinstance(item, dict)]
+        return []
+
+    async def pull_messages(self, identifier: str) -> None:
+        """В режиме демона приём обычно уже идёт. Короткий receive — запасной путь."""
+        await self.receive_batch(identifier, timeout=1)
 
     async def accept_group_invite(self, identifier: str, group_id: str) -> None:
         """updateGroup принимает приглашение, если аккаунт в нём pending member."""
@@ -209,6 +217,31 @@ class JsonRpcBackend:
                 log.info("Приглашение %s уже принято: %s", group_id[:24], exc)
                 return
             raise
+
+    async def create_group(
+        self,
+        identifier: str,
+        name: str,
+        *,
+        members: list[str] | None = None,
+        description: str = "",
+    ) -> GroupInfo:
+        params: dict = {"name": name, "members": list(members or [])}
+        if identifier:
+            params["account"] = identifier
+        if description:
+            params["description"] = description
+        result = await self._call("createGroup", params)
+        if isinstance(result, str) and result.strip():
+            return GroupInfo(id=result.strip(), name=name, description=description, members=list(members or []), is_member=True)
+        if isinstance(result, dict):
+            info = group_from_payload(result)
+            if info is not None:
+                return info
+            gid = str(result.get("id") or result.get("groupId") or "")
+            if gid:
+                return GroupInfo(id=gid, name=name, description=description, members=list(members or []), is_member=True)
+        raise SignalError("Signal не вернул идентификатор созданной группы")
 
     def _send_params(
         self,

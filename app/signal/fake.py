@@ -86,6 +86,9 @@ class FakeBackend:
         pending = [group for group in self.pending_invites.get(identifier, []) if group.id not in known]
         return list(self.groups[identifier]) + pending
 
+    async def receive_batch(self, identifier: str, *, timeout: float = 1.0) -> list[dict]:
+        return []
+
     async def pull_messages(self, identifier: str) -> None:
         """Переносит заранее положенные приглашения в список видимых."""
         staged = self.staged_invites.pop(identifier, [])
@@ -136,6 +139,27 @@ class FakeBackend:
                 raw={"isMember": True},
             )
         )
+
+    async def create_group(
+        self,
+        identifier: str,
+        name: str,
+        *,
+        members: list[str] | None = None,
+        description: str = "",
+    ) -> GroupInfo:
+        stored = self.groups.setdefault(identifier, [])
+        gid = f"group.CREATED{len(stored)}=="
+        info = GroupInfo(
+            id=gid,
+            name=name,
+            description=description,
+            members=list(members or []) + [identifier],
+            admins=[identifier],
+            is_member=True,
+        )
+        stored.append(info)
+        return info
 
     async def send(
         self,

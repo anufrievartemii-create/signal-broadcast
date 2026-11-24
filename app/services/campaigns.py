@@ -10,9 +10,10 @@ import logging
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Account, BroadcastItem, Campaign
+from app.models import Account, BroadcastItem, Campaign, Group
 from app.schemas import CampaignForm
 from app.services import audit
+from app.services import contacts as contacts_service
 from app.services import groups as groups_service
 from app.services.templates import Preview, build_context, check_variables, render
 
@@ -21,7 +22,13 @@ log = logging.getLogger(__name__)
 
 def _target_json(form: CampaignForm) -> str:
     return json.dumps(
-        {"mode": form.target_mode, "group_ids": form.group_ids, "tags": form.tags},
+        {
+            "mode": form.target_mode,
+            "group_ids": form.group_ids,
+            "tags": form.tags,
+            "recipients": form.recipients,
+            "contact_ids": form.contact_ids,
+        },
         ensure_ascii=False,
     )
 
@@ -151,8 +158,20 @@ async def preview(session: AsyncSession, form: CampaignForm, *, limit: int = 5) 
         target_json=_target_json(form),
         body_template=form.body_template,
     )
-    groups = await groups_service.resolve_targets(session, transient)
     previews: list[Preview] = []
+    if form.target_mode == "direct":
+        recipients = await contacts_service.resolve_recipients(
+            session, account_id=form.account_id, numbers=form.recipients, contact_ids=form.contact_ids
+        )
+        for number, name in recipients[:limit]:
+            stub = Group(name=name, group_id=number, description="", members_count=1, tags="", account_id=form.account_id)
+            context = build_context(stub, form.variables or {}, account)
+            context["contact.name"] = name
+            context["contact.number"] = number
+            text = render(form.body_template, context, strict=False)
+            previews.append(Preview(group=stub, text=text, length=len(text)))
+        return previews
+    groups = await groups_service.resolve_targets(session, transient)
     for group in groups[:limit]:
         context = build_context(group, form.variables or {}, account)
         text = render(form.body_template, context, strict=False)

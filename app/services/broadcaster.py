@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from app.db import SessionLocal
 from app.models import Account, BroadcastItem, Campaign, Group, utcnow
 from app.services import attachments, audit, settings_store, templates
+from app.services import contacts as contacts_service
 from app.services import groups as groups_service
 from app.signal import get_backend
 from app.signal.base import SignalBackend, SignalError, SignalFatalSend, SignalRateLimited, SignalUnavailable
@@ -131,16 +132,42 @@ registry = RunRegistry()
 # --- планирование позиций -----------------------------------------------------
 
 
-async def plan_items(session, campaign: Campaign) -> tuple[list[BroadcastItem], list[Group]]:
-    """Создаёт позиции рассылки под целевые группы. Идемпотентно.
+def campaign_is_direct(campaign: Campaign) -> bool:
+    return groups_service.parse_target(campaign).get("mode") == "direct"
 
-    Позиция = пара (кампания, group_gid): повторный запуск той же кампании
-    не создаёт дублей и не отправляет туда, где уже есть статус sent.
+
+async def plan_items(session, campaign: Campaign) -> tuple[list[BroadcastItem], list[Group]]:
+    """Создаёт позиции рассылки. Идемпотентно.
+
+    Позиция = пара (кампания, group_gid): для групп это ID группы Signal,
+    для личных сообщений — номер получателя.
     """
-    targets = await groups_service.resolve_targets(session, campaign)
     result = await session.execute(select(BroadcastItem).where(BroadcastItem.campaign_id == campaign.id))
     existing = {item.group_gid: item for item in result.scalars().all()}
     items: list[BroadcastItem] = []
+    if campaign_is_direct(campaign):
+        target = groups_service.parse_target(campaign)
+        recipients = await contacts_service.resolve_recipients(
+            session,
+            account_id=campaign.account_id,
+            numbers=[str(n) for n in target.get("recipients") or []],
+            contact_ids=[int(i) for i in target.get("contact_ids") or []],
+        )
+        for number, name in recipients:
+            item = existing.get(number)
+            if item is None:
+                item = BroadcastItem(
+                    campaign_id=campaign.id,
+                    group_gid=number,
+                    group_name=name,
+                    status="pending",
+                )
+                session.add(item)
+            items.append(item)
+        await session.commit()
+        return items, []
+
+    targets = await groups_service.resolve_targets(session, campaign)
     for group in targets:
         item = existing.get(group.group_id)
         if item is None:
@@ -333,8 +360,9 @@ async def _deliver(
     text: str,
     base64_attachments: list[str],
     eff: settings_store.Effective,
+    is_direct: bool = False,
 ) -> tuple[bool, str | None]:
-    """Отправка в одну группу с ретраями.
+    """Отправка в одну группу или в личку с ретраями.
 
     Возвращает (успех, текст ошибки). Фатальные ошибки не ретраим: повтор
     бессмыслен и лишь увеличивает риск попасть под ограничения Signal.
@@ -343,9 +371,14 @@ async def _deliver(
     for attempt in range(1, max_attempts + 1):
         item.attempts = attempt
         try:
-            result = await backend.send_group(
-                identifier, item.group_gid, text, base64_attachments=base64_attachments or None
-            )
+            if is_direct:
+                result = await backend.send(
+                    identifier, [item.group_gid], text, base64_attachments=base64_attachments or None
+                )
+            else:
+                result = await backend.send_group(
+                    identifier, item.group_gid, text, base64_attachments=base64_attachments or None
+                )
         except SignalFatalSend as exc:
             item.status = "failed"
             item.error = str(exc)
@@ -465,13 +498,23 @@ async def _run(campaign_id: int, targets_by_gid: dict[str, Group]) -> None:
                 {
                     "type": "log",
                     "text": (
-                        f"Старт: групп {len(pending)}, задержка {eff.delay_min:.1f}-{eff.delay_max:.1f} с, "
+                        f"Старт: получателей {len(pending)}, задержка {eff.delay_min:.1f}-{eff.delay_max:.1f} с, "
                         f"вложений {len(base64_attachments)}, dry_run={campaign.dry_run}"
                     ),
                 }
             )
-            await _run_loop(run, session, campaign, account, pending, targets_by_gid, eff, extra_vars,
-                            base64_attachments)
+            await _run_loop(
+                run,
+                session,
+                campaign,
+                account,
+                pending,
+                targets_by_gid,
+                eff,
+                extra_vars,
+                base64_attachments,
+                campaign_is_direct(campaign),
+            )
     except asyncio.CancelledError:
         run.state = "finished"
         run.reason = "задача отменена"
@@ -497,6 +540,7 @@ async def _run_loop(
     eff: settings_store.Effective,
     extra_vars: dict[str, str],
     base64_attachments: list[str],
+    is_direct: bool,
 ) -> None:
     """Перебирает позиции: пауза/стоп, лимиты, рендер шаблона, отправка, задержка."""
     backend: SignalBackend = get_backend()
@@ -521,32 +565,38 @@ async def _run_loop(
 
         run.current = item.group_name or item.group_gid[:16]
         group = targets_by_gid.get(item.group_gid)
-        if group is None:
+        if not is_direct and group is None:
             item.status = "failed"
             item.error = "группа недоступна (не активна или удалена)"
             item.attempts = max(item.attempts, 1)
             run.failed += 1
         else:
             text = ""
+            label = (group.name if group is not None else None) or item.group_name or item.group_gid
             try:
                 context = templates.build_context(group, extra_vars, account)
+                if is_direct:
+                    context["contact.name"] = item.group_name or item.group_gid
+                    context["contact.number"] = item.group_gid
+                    context.setdefault("group.name", context["contact.name"])
+                    context.setdefault("group.id", item.group_gid)
                 text = templates.render(campaign.body_template, context, strict=True)
             except templates.TemplateError as exc:
                 item.status = "failed"
                 item.error = str(exc)
                 item.attempts = max(item.attempts, 1)
                 run.failed += 1
-                run.publish({"type": "log", "text": f"Шаблон не собран для {group.name}: {exc}"})
+                run.publish({"type": "log", "text": f"Шаблон не собран для {label}: {exc}"})
 
             if item.status != "failed":
                 if campaign.dry_run:
                     item.status = "skipped"
                     item.error = f"dry-run: {len(text)} симв., не отправлено"
                     run.skipped += 1
-                    run.publish({"type": "log", "text": f"[dry-run] {group.name}: {text[:60]}"})
+                    run.publish({"type": "log", "text": f"[dry-run] {label}: {text[:60]}"})
                 else:
                     ok, _error = await _deliver(
-                        run, backend, account.identifier, item, text, base64_attachments, eff
+                        run, backend, account.identifier, item, text, base64_attachments, eff, is_direct
                     )
                     if ok:
                         run.sent += 1

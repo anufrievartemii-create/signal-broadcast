@@ -46,7 +46,12 @@ class Account(Base):
     groups: Mapped[list[Group]] = relationship(
         back_populates="account", cascade="all, delete-orphan", lazy="selectin"
     )
-    campaigns: Mapped[list[Campaign]] = relationship(back_populates="account", lazy="selectin")
+    contacts: Mapped[list[Contact]] = relationship(
+        back_populates="account", cascade="all, delete-orphan", lazy="selectin"
+    )
+    campaigns: Mapped[list[Campaign]] = relationship(
+        back_populates="account", cascade="all, delete-orphan", lazy="selectin"
+    )
 
     @property
     def identifier(self) -> str:
@@ -85,6 +90,26 @@ class Group(Base):
         return f"<Group {self.id} {self.name!r}>"
 
 
+class Contact(Base):
+    """Контакт для рассылки в личные сообщения (номер Signal)."""
+
+    __tablename__ = "contacts"
+    __table_args__ = (UniqueConstraint("account_id", "number", name="uq_contact_account_number"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    number: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(255), default="")
+    notes: Mapped[str | None] = mapped_column(Text)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    account: Mapped[Account] = relationship(back_populates="contacts")
+
+    def __repr__(self) -> str:  # pragma: no cover - отладка
+        return f"<Contact {self.id} {self.number}>"
+
+
 class Campaign(Base):
     """Рассылка: шаблон, получатели (группы), лимиты, расписание."""
 
@@ -92,7 +117,7 @@ class Campaign(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
-    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
     body_template: Mapped[str] = mapped_column(Text, default="")
     variables_json: Mapped[str] = mapped_column(Text, default="{}")  # доп. переменные шаблона
     attachments_json: Mapped[str] = mapped_column(Text, default="[]")  # имена файлов в uploads_dir

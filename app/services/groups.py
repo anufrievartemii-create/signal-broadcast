@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 
 from sqlalchemy import func, or_, select
@@ -15,6 +16,31 @@ from app.services import audit
 from app.signal.base import GroupInfo, SignalBackend, SignalError, accept_already_done
 
 log = logging.getLogger(__name__)
+
+_DEBUG_LOG = r"c:\Users\anufr\Desktop\signal-broadcast\.cursor\debug-4e9a74.log"
+
+
+def _agent_dbg(hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    # #region agent log
+    try:
+        with open(_DEBUG_LOG, "a", encoding="utf-8") as fh:
+            fh.write(
+                json.dumps(
+                    {
+                        "sessionId": "4e9a74",
+                        "runId": "pre-fix",
+                        "hypothesisId": hypothesis_id,
+                        "location": location,
+                        "message": message,
+                        "data": data,
+                        "timestamp": int(time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except OSError:
+        pass
+    # #endregion
 
 
 @dataclass(slots=True)
@@ -73,12 +99,43 @@ async def accept_pending_invites(
     """Принимает приглашения, которые Signal уже показал этому аккаунту."""
     if not account.identifier:
         return 0
+    suffix = account.identifier[-4:]
+    started = time.perf_counter()
+    # #region agent log
+    _agent_dbg(
+        "E",
+        "groups.py:accept_pending_invites",
+        "start",
+        {"pull": pull_messages, "id_suffix": suffix},
+    )
+    # #endregion
     if pull_messages:
         try:
             await backend.pull_messages(account.identifier)
         except SignalError as exc:
             log.info("Приём перед синхронизацией %s пропущен: %s", account.identifier, exc)
+        # #region agent log
+        _agent_dbg(
+            "E",
+            "groups.py:accept_pending_invites",
+            "after pull",
+            {"ms": int((time.perf_counter() - started) * 1000), "id_suffix": suffix},
+        )
+        # #endregion
+    listed = time.perf_counter()
     infos = await backend.list_groups(account.identifier)
+    # #region agent log
+    _agent_dbg(
+        "D",
+        "groups.py:accept_pending_invites",
+        "after list_groups",
+        {
+            "ms": int((time.perf_counter() - listed) * 1000),
+            "groups": len(infos),
+            "id_suffix": suffix,
+        },
+    )
+    # #endregion
     accepted = 0
     for info in infos:
         if not is_pending_invite(info, account):
@@ -196,7 +253,12 @@ async def list_groups(
         stmt = stmt.where(Group.active.is_(True))
     if search:
         pattern = f"%{search.strip()}%"
-        stmt = stmt.where(Group.name.ilike(pattern) | Group.description.ilike(pattern))
+        stmt = stmt.where(
+            Group.name.ilike(pattern)
+            | Group.description.ilike(pattern)
+            | Group.group_id.ilike(pattern)
+            | Group.tags.ilike(pattern)
+        )
     if tag:
         stmt = stmt.where(Group.tags.contains(tag.strip()))
     result = await session.execute(stmt)
@@ -256,6 +318,8 @@ def parse_target(campaign: Campaign) -> dict:
     data.setdefault("mode", "selected")
     data.setdefault("group_ids", [])
     data.setdefault("tags", [])
+    data.setdefault("recipients", [])
+    data.setdefault("contact_ids", [])
     return data
 
 
@@ -279,8 +343,98 @@ async def resolve_targets(session: AsyncSession, campaign: Campaign) -> list[Gro
             stmt = stmt.where(or_(*[Group.tags.contains(t) for t in tags]))
         else:
             return []
+    elif mode == "direct":
+        return []
     elif mode != "all_active":
         log.warning("Кампания %s: неизвестный режим %r — беру все активные группы", campaign.id, mode)
     result = await session.execute(stmt.order_by(Group.name))
     return list(result.scalars().all())
+
+
+def parse_member_list(raw: str) -> list[str]:
+    numbers: list[str] = []
+    seen: set[str] = set()
+    for chunk in raw.replace(";", ",").replace("\n", ",").split(","):
+        cleaned = "".join(ch for ch in chunk if ch.isdigit() or ch == "+").strip()
+        if not cleaned:
+            continue
+        if not cleaned.startswith("+") and cleaned.isdigit():
+            cleaned = "+" + cleaned
+        if cleaned in seen:
+            continue
+        seen.add(cleaned)
+        numbers.append(cleaned)
+    return numbers
+
+
+async def create_signal_group(
+    session: AsyncSession,
+    backend: SignalBackend,
+    account: Account,
+    *,
+    name: str,
+    members: list[str],
+    description: str = "",
+) -> Group:
+    """Создаёт группу в Signal и кладёт её в локальный список."""
+    if not account.identifier:
+        msg = "Аккаунт не привязан к Signal"
+        raise ValueError(msg)
+    if not name.strip():
+        msg = "Укажите название группы"
+        raise ValueError(msg)
+    info = await backend.create_group(account.identifier, name.strip(), members=members, description=description.strip())
+    await sync_account_groups(session, backend, account, pull_messages=False)
+    result = await session.execute(
+        select(Group).where(Group.account_id == account.id, Group.group_id == info.id)
+    )
+    group = result.scalar_one_or_none()
+    if group is None:
+        group = Group(
+            account_id=account.id,
+            group_id=info.id,
+            name=info.name or name.strip(),
+            description=info.description or description.strip() or None,
+            members_count=info.members_count,
+            is_member=True,
+            is_admin=True,
+            active=True,
+            synced_at=utcnow(),
+        )
+        session.add(group)
+        await session.commit()
+        await session.refresh(group)
+    await audit.record(session, "groups.create", f"{account.identifier}: {group.name} ({group.group_id})")
+    return group
+
+
+async def join_signal_group(
+    session: AsyncSession,
+    backend: SignalBackend,
+    account: Account,
+    group_id: str,
+) -> Group | None:
+    """Вступает в группу по ID (если есть приглашение) и обновляет кэш."""
+    if not account.identifier:
+        msg = "Аккаунт не привязан к Signal"
+        raise ValueError(msg)
+    gid = group_id.strip()
+    if not gid:
+        msg = "Укажите Group ID"
+        raise ValueError(msg)
+    try:
+        await backend.accept_group_invite(account.identifier, gid)
+    except SignalError as exc:
+        if not accept_already_done(exc):
+            log.warning("Вступление в %s не удалось, пробую синхронизацию: %s", gid, exc)
+    await sync_account_groups(session, backend, account)
+    result = await session.execute(select(Group).where(Group.account_id == account.id, Group.group_id == gid))
+    group = result.scalar_one_or_none()
+    if group is None:
+        # ID мог отличаться префиксом group.
+        result = await session.execute(
+            select(Group).where(Group.account_id == account.id, Group.group_id.ilike(f"%{gid}%"))
+        )
+        group = result.scalars().first()
+    return group
 
