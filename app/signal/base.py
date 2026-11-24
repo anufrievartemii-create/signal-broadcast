@@ -76,11 +76,79 @@ class GroupInfo:
     members: list[str] = field(default_factory=list)
     admins: list[str] = field(default_factory=list)
     is_member: bool = True
+    #: номера/ACI, которых пригласили, но они ещё не вступили
+    pending_members: list[str] = field(default_factory=list)
     raw: dict = field(default_factory=dict)
 
     @property
     def members_count(self) -> int:
         return len(self.members)
+
+
+def _string_list(value: object) -> list[str]:
+    """Список номеров из JSON: строки или объекты {number, uuid}."""
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            result.append(item.strip())
+        elif isinstance(item, dict):
+            text = item.get("number") or item.get("uuid") or item.get("aci") or item.get("id")
+            if text and str(text).strip():
+                result.append(str(text).strip())
+    return result
+
+
+def _first_present_list(item: dict, *keys: str) -> list[str]:
+    for key in keys:
+        if key in item and item[key] is not None:
+            return _string_list(item[key])
+    return []
+
+
+def group_from_payload(item: dict) -> GroupInfo | None:
+    """GroupInfo из ответа listGroups / GET /v1/groups."""
+    gid = item.get("id") or item.get("groupId") or ""
+    if not gid:
+        return None
+    if "isMember" in item:
+        is_member = bool(item.get("isMember"))
+    elif "is_member" in item:
+        is_member = bool(item.get("is_member"))
+    else:
+        is_member = True
+    return GroupInfo(
+        id=str(gid),
+        name=str(item.get("name") or ""),
+        description=str(item.get("description") or ""),
+        members=_first_present_list(item, "members"),
+        admins=_first_present_list(item, "admins"),
+        is_member=is_member,
+        pending_members=_first_present_list(
+            item,
+            "pendingMembers",
+            "pending_members",
+            "pending_requests",
+            "pendingRequests",
+        ),
+        raw=item,
+    )
+
+
+_BENIGN_ACCEPT_MARKERS = (
+    "already a member",
+    "already member",
+    "not a pending",
+    "no pending invitation",
+    "no pending member",
+)
+
+
+def accept_already_done(exc: BaseException) -> bool:
+    """Повторный приём приглашения не должен ронять синхронизацию."""
+    text = str(exc).lower()
+    return any(marker in text for marker in _BENIGN_ACCEPT_MARKERS)
 
 
 @dataclass(slots=True)
@@ -125,6 +193,12 @@ class SignalBackend(Protocol):
     async def unregister(self, identifier: str, *, delete_account: bool = False) -> None: ...
 
     async def list_groups(self, identifier: str) -> list[GroupInfo]: ...
+
+    async def pull_messages(self, identifier: str) -> None:
+        """Забирает входящие, чтобы приглашения в группы появились в list_groups."""
+
+    async def accept_group_invite(self, identifier: str, group_id: str) -> None:
+        """Принимает уже существующее приглашение в группу. Повторный вызов не ошибка."""
 
     async def send(
         self,

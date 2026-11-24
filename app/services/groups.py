@@ -10,8 +10,9 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Account, Campaign, Group, utcnow
+from app.services import accounts as accounts_service
 from app.services import audit
-from app.signal.base import SignalBackend
+from app.signal.base import GroupInfo, SignalBackend, SignalError, accept_already_done
 
 log = logging.getLogger(__name__)
 
@@ -22,23 +23,105 @@ class SyncResult:
     updated: int = 0
     deactivated: int = 0
     total: int = 0
+    accepted: int = 0
 
     @property
     def summary(self) -> str:
-        return f"новых {self.created}, обновлено {self.updated}, скрыто {self.deactivated}, всего {self.total}"
+        text = f"новых {self.created}, обновлено {self.updated}, скрыто {self.deactivated}, всего {self.total}"
+        if self.accepted:
+            return f"принято приглашений {self.accepted}, {text}"
+        return text
 
 
-async def sync_account_groups(session: AsyncSession, backend: SignalBackend, account: Account) -> SyncResult:
-    """Забирает группы аккаунта из Signal и обновляет локальный кэш.
+def _digits(value: str) -> str:
+    return "".join(ch for ch in value if ch.isdigit())
+
+
+def _account_matches_member(account: Account, member: str) -> bool:
+    """Совпадает ли участник приглашения с номером или ACI нашего аккаунта."""
+    member_text = member.strip().lower()
+    member_digits = _digits(member)
+    for candidate in (account.number, account.aci, account.identifier):
+        if not candidate:
+            continue
+        if candidate.strip().lower() == member_text:
+            return True
+        digits = _digits(candidate)
+        if digits and member_digits and digits == member_digits:
+            return True
+    return False
+
+
+def is_pending_invite(info: GroupInfo, account: Account) -> bool:
+    """Аккаунт уже приглашён в эту группу и ещё не участник.
+
+    Чужие pending/requesting members (заявки других людей) сюда не попадают:
+    мы не вступаем в группы без приглашения и не одобряем чужие заявки.
+    """
+    if info.is_member or not account.identifier:
+        return False
+    return any(_account_matches_member(account, member) for member in info.pending_members)
+
+
+async def accept_pending_invites(
+    session: AsyncSession,
+    backend: SignalBackend,
+    account: Account,
+    *,
+    pull_messages: bool = True,
+) -> int:
+    """Принимает приглашения, которые Signal уже показал этому аккаунту."""
+    if not account.identifier:
+        return 0
+    if pull_messages:
+        try:
+            await backend.pull_messages(account.identifier)
+        except SignalError as exc:
+            log.info("Приём перед синхронизацией %s пропущен: %s", account.identifier, exc)
+    infos = await backend.list_groups(account.identifier)
+    accepted = 0
+    for info in infos:
+        if not is_pending_invite(info, account):
+            continue
+        try:
+            await backend.accept_group_invite(account.identifier, info.id)
+        except SignalError as exc:
+            if accept_already_done(exc):
+                log.info("Приглашение %s уже принято: %s", info.id, exc)
+                continue
+            log.warning("Не удалось принять приглашение %s (%s): %s", info.name or info.id, account.identifier, exc)
+            continue
+        accepted += 1
+        log.info("Аккаунт %s принял приглашение в группу %s", account.identifier, info.name or info.id)
+    if accepted:
+        await audit.record(
+            session,
+            "groups.accept_invites",
+            f"аккаунт {account.identifier}: принято {accepted}",
+            commit=False,
+        )
+    return accepted
+
+
+async def sync_account_groups(
+    session: AsyncSession,
+    backend: SignalBackend,
+    account: Account,
+    *,
+    pull_messages: bool = True,
+) -> SyncResult:
+    """Принимает ожидающие приглашения и обновляет локальный кэш групп.
 
     Группы, которых больше нет (или где мы не участник), не удаляем, а помечаем
     active=False — история рассылок по ним должна оставаться.
+    Ручное выключение рассылки (active=False при is_member=True) не включаем обратно.
     """
+    accepted = await accept_pending_invites(session, backend, account, pull_messages=pull_messages)
     infos = await backend.list_groups(account.identifier)
     result = await session.execute(select(Group).where(Group.account_id == account.id))
     existing = {g.group_id: g for g in result.scalars().all()}
     seen: set[str] = set()
-    stats_ = SyncResult(total=len(infos))
+    stats_ = SyncResult(total=len(infos), accepted=accepted)
 
     for info in infos:
         seen.add(info.id)
@@ -62,10 +145,13 @@ async def sync_account_groups(session: AsyncSession, backend: SignalBackend, acc
         group.name = info.name or group.name
         group.description = info.description or group.description
         group.members_count = info.members_count
-        group.is_member = info.is_member
         group.is_admin = account.identifier in info.admins
         group.synced_at = utcnow()
-        if not info.is_member and group.active:
+        became_member = info.is_member and not group.is_member
+        group.is_member = info.is_member
+        if became_member:
+            group.active = True
+        elif not info.is_member and group.active:
             group.active = False
             stats_.deactivated += 1
         stats_.updated += 1
@@ -79,6 +165,19 @@ async def sync_account_groups(session: AsyncSession, backend: SignalBackend, acc
     await session.commit()
     await audit.record(session, "groups.sync", f"аккаунт {account.identifier}: {stats_.summary}")
     return stats_
+
+
+async def sync_linked_accounts(session: AsyncSession, backend: SignalBackend) -> list[SyncResult]:
+    """Принимает приглашения и синхронизирует группы всех привязанных аккаунтов."""
+    results: list[SyncResult] = []
+    for account in await accounts_service.list_linked(session):
+        if not account.identifier:
+            continue
+        try:
+            results.append(await sync_account_groups(session, backend, account))
+        except SignalError as exc:
+            log.warning("Синхронизация групп %s не удалась: %s", account.identifier, exc)
+    return results
 
 
 async def list_groups(

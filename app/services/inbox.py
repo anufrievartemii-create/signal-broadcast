@@ -20,8 +20,9 @@ from sqlalchemy import select
 from app.db import SessionLocal
 from app.models import Account, Group, InboxEvent, OptOut
 from app.services import audit, settings_store
+from app.services import groups as groups_service
 from app.signal import get_backend
-from app.signal.base import SignalBackend
+from app.signal.base import SignalBackend, SignalError
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +43,31 @@ def contains_stop_word(text: str, stop_words: list[str]) -> str | None:
         if cleaned == word or word in words:
             return word
     return None
+
+
+def is_group_membership_event(data: dict) -> bool:
+    """Событие про состав группы, а не обычное сообщение в чат.
+
+    Приглашение приходит как groupV2 без текста. Текстовые сообщения групп
+    не запускают синхронизацию на каждое слово.
+    """
+    envelope = data.get("envelope") if isinstance(data, dict) else None
+    if not isinstance(envelope, dict):
+        return False
+    data_message = envelope.get("dataMessage")
+    if isinstance(data_message, dict):
+        has_group = bool(
+            data_message.get("groupV2") or data_message.get("groupInfo") or data_message.get("groupContext")
+        )
+        if has_group and not data_message.get("message"):
+            return True
+    sync = envelope.get("syncMessage")
+    if isinstance(sync, dict):
+        sent = sync.get("sentMessage") if isinstance(sync.get("sentMessage"), dict) else {}
+        has_group = bool(sent.get("groupV2") or sent.get("groupInfo") or sent.get("groupContext"))
+        if has_group and not sent.get("message"):
+            return True
+    return False
 
 
 def parse_envelope(data: dict) -> dict:
@@ -83,6 +109,7 @@ class InboxListener:
     def __init__(self, backend: SignalBackend | None = None) -> None:
         self._backend = backend
         self._tasks: dict[str, asyncio.Task] = {}
+        self._group_sync_tasks: dict[int, asyncio.Task] = {}
         self._stop = asyncio.Event()
 
     @property
@@ -134,8 +161,9 @@ class InboxListener:
     async def stop(self) -> None:
         """Останавливает все подключения (выключение приложения)."""
         self._stop.set()
-        tasks = list(self._tasks.values())
+        tasks = list(self._tasks.values()) + list(self._group_sync_tasks.values())
         self._tasks.clear()
+        self._group_sync_tasks.clear()
         for task in tasks:
             task.cancel()
         if tasks:
@@ -191,6 +219,41 @@ class InboxListener:
                 await self._apply_opt_out(session, account_id, parsed, stop_word)
                 event.handled = True
             await session.commit()
+        if is_group_membership_event(data):
+            self._schedule_group_sync(account_id)
+
+    def _schedule_group_sync(self, account_id: int) -> None:
+        """Один синк на аккаунт, пока предыдущий не закончился."""
+        current = self._group_sync_tasks.get(account_id)
+        if current is not None and not current.done():
+            return
+        self._group_sync_tasks[account_id] = asyncio.create_task(
+            self._sync_after_invite(account_id),
+            name=f"invite-sync-{account_id}",
+        )
+
+    async def _sync_after_invite(self, account_id: int) -> None:
+        """Приглашение уже пришло по сокету — принимать без второго receive."""
+        try:
+            await asyncio.sleep(1.0)
+            if self._stop.is_set():
+                return
+            async with SessionLocal() as session:
+                account = await session.get(Account, account_id)
+                if account is None or account.status != "linked" or not account.identifier:
+                    return
+                await groups_service.sync_account_groups(
+                    session,
+                    self.backend,
+                    account,
+                    pull_messages=False,
+                )
+        except asyncio.CancelledError:
+            raise
+        except SignalError as exc:
+            log.warning("Не удалось принять приглашение аккаунта %s: %s", account_id, exc)
+        except Exception:
+            log.exception("Не удалось синхронизировать группы после входящего события")
 
     async def _apply_opt_out(self, session, account_id: int, parsed: dict, word: str) -> None:
         """Фиксирует отписку: группа снимается с рассылок."""

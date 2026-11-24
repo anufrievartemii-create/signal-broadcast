@@ -26,6 +26,12 @@ class FakeBackend:
     accounts: list[AccountInfo] = field(default_factory=list)
     groups: dict[str, list[GroupInfo]] = field(default_factory=dict)
     sent: list[dict] = field(default_factory=list)
+    #: приглашения, которые станут видны после pull_messages (имитация receive)
+    staged_invites: dict[str, list[GroupInfo]] = field(default_factory=dict)
+    #: приглашения, уже полученные и ещё не принятые
+    pending_invites: dict[str, list[GroupInfo]] = field(default_factory=dict)
+    #: группы, для которых вызывали accept_group_invite
+    accepted_calls: list[tuple[str, str]] = field(default_factory=list)
     #: идентификаторы групп, отправка в которые должна падать
     failing_groups: set[str] = field(default_factory=set)
     #: идентификаторы групп с фатальной ошибкой (без ретраев)
@@ -76,7 +82,60 @@ class FakeBackend:
     async def list_groups(self, identifier: str) -> list[GroupInfo]:
         if identifier not in self.groups:
             self.groups[identifier] = []
-        return list(self.groups[identifier])
+        known = {group.id for group in self.groups[identifier]}
+        pending = [group for group in self.pending_invites.get(identifier, []) if group.id not in known]
+        return list(self.groups[identifier]) + pending
+
+    async def pull_messages(self, identifier: str) -> None:
+        """Переносит заранее положенные приглашения в список видимых."""
+        staged = self.staged_invites.pop(identifier, [])
+        if not staged:
+            return
+        bucket = self.pending_invites.setdefault(identifier, [])
+        have = {group.id for group in bucket}
+        for invite in staged:
+            if invite.id not in have:
+                bucket.append(invite)
+
+    async def accept_group_invite(self, identifier: str, group_id: str) -> None:
+        """Принимает приглашение, которое уже есть у этого аккаунта.
+
+        Повторный вызов для уже принятой группы ничего не делает.
+        Чужую заявку на вступление (аккаунт сам не pending) этот метод не вызывается
+        из синхронизации; прямой вызов без приглашения — ошибка.
+        """
+        self.accepted_calls.append((identifier, group_id))
+        pending = self.pending_invites.get(identifier, [])
+        match = next((group for group in pending if group.id == group_id), None)
+        if match is None:
+            current = self.groups.get(identifier, [])
+            if any(group.id == group_id and group.is_member for group in current):
+                return
+            raise SignalError(f"Нет ожидающего приглашения: {group_id}")
+        self.pending_invites[identifier] = [group for group in pending if group.id != group_id]
+        members = list(match.members)
+        if identifier not in members:
+            members.append(identifier)
+        stored = self.groups.setdefault(identifier, [])
+        existing = next((group for group in stored if group.id == group_id), None)
+        if existing is not None:
+            existing.is_member = True
+            existing.pending_members = []
+            existing.name = match.name or existing.name
+            existing.members = members
+            return
+        stored.append(
+            GroupInfo(
+                id=match.id,
+                name=match.name,
+                description=match.description,
+                members=members,
+                admins=list(match.admins),
+                pending_members=[],
+                is_member=True,
+                raw={"isMember": True},
+            )
+        )
 
     async def send(
         self,

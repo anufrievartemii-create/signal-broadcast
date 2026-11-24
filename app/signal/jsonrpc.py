@@ -27,6 +27,8 @@ from app.signal.base import (
     SignalNotFound,
     SignalRateLimited,
     SignalUnavailable,
+    accept_already_done,
+    group_from_payload,
 )
 
 log = logging.getLogger(__name__)
@@ -180,21 +182,33 @@ class JsonRpcBackend:
         for item in result or []:
             if not isinstance(item, dict):
                 continue
-            gid = item.get("id") or ""
-            if not gid:
-                continue
-            groups.append(
-                GroupInfo(
-                    id=str(gid),
-                    name=str(item.get("name") or ""),
-                    description=str(item.get("description") or ""),
-                    members=list(item.get("members") or []),
-                    admins=list(item.get("admins") or []),
-                    is_member=bool(item.get("isMember", True)),
-                    raw=item,
-                )
-            )
+            info = group_from_payload(item)
+            if info is not None:
+                groups.append(info)
         return groups
+
+    async def pull_messages(self, identifier: str) -> None:
+        """В режиме демона приём обычно уже идёт. Короткий receive — запасной путь."""
+        params: dict = {"timeout": 1}
+        if identifier:
+            params["account"] = identifier
+        try:
+            await self._call("receive", params)
+        except SignalError as exc:
+            log.info("Приём сообщений %s пропущен: %s", identifier, exc)
+
+    async def accept_group_invite(self, identifier: str, group_id: str) -> None:
+        """updateGroup принимает приглашение, если аккаунт в нём pending member."""
+        params: dict = {"groupId": group_id}
+        if identifier:
+            params["account"] = identifier
+        try:
+            await self._call("updateGroup", params)
+        except SignalError as exc:
+            if accept_already_done(exc):
+                log.info("Приглашение %s уже принято: %s", group_id[:24], exc)
+                return
+            raise
 
     def _send_params(
         self,

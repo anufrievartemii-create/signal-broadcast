@@ -3,19 +3,25 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import select
 
 from app.db import SessionLocal
 from app.models import Campaign, utcnow
 from app.services import audit, broadcaster
+from app.services import groups as groups_service
+from app.signal import get_backend
 
 log = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler()
+
+GROUP_SYNC_JOB_ID = "groups-auto-accept"
+_GROUP_SYNC_INTERVAL = timedelta(seconds=60)
 
 
 def _job_id(campaign_id: int) -> str:
@@ -38,11 +44,41 @@ async def _fire(campaign_id: int) -> None:
             await audit.record(session, "campaign.schedule_failed", f"{campaign_id}: {exc}")
 
 
+async def _auto_accept_groups() -> None:
+    """Периодически принимает приглашения и синхронизирует группы привязанных аккаунтов."""
+    log.info("Автоприём приглашений и синхронизация групп")
+    try:
+        backend = get_backend()
+    except ValueError as exc:
+        log.error("Автоприём пропущен: %s", exc)
+        return
+    try:
+        async with SessionLocal() as session:
+            await groups_service.sync_linked_accounts(session, backend)
+    except Exception:
+        log.exception("Автоприём приглашений не удался")
+
+
+def _ensure_auto_accept() -> None:
+    """Ставит задачу автоприёма. Повторный start не плодит вторую задачу."""
+    scheduler.add_job(
+        _auto_accept_groups,
+        trigger=IntervalTrigger(seconds=int(_GROUP_SYNC_INTERVAL.total_seconds())),
+        id=GROUP_SYNC_JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=30,
+        next_run_time=datetime.now(UTC) + timedelta(seconds=5),
+    )
+
+
 def start() -> None:
     """Запускает планировщик (вызывается из lifespan приложения)."""
     if not scheduler.running:
         scheduler.start()
         log.info("Планировщик запущен")
+    _ensure_auto_accept()
 
 
 def shutdown() -> None:

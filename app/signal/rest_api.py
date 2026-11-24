@@ -31,7 +31,9 @@ from app.signal.base import (
     SignalRateLimited,
     SignalUnauthorized,
     SignalUnavailable,
+    accept_already_done,
     as_group_recipient,
+    group_from_payload,
     strip_group_prefix,
 )
 
@@ -111,9 +113,10 @@ class RestApiBackend:
         *,
         json: dict | None = None,
         params: dict | None = None,
+        timeout: float | None = None,
     ) -> httpx.Response:
         try:
-            resp = await self.client.request(method, path, json=json, params=params)
+            resp = await self.client.request(method, path, json=json, params=params, timeout=timeout)
         except httpx.HTTPError as exc:
             msg = f"Signal API недоступен ({self.base_url}{path}): {exc}"
             raise SignalUnavailable(msg) from exc
@@ -211,7 +214,7 @@ class RestApiBackend:
     # --- группы ----------------------------------------------------------------
 
     async def list_groups(self, identifier: str) -> list[GroupInfo]:
-        """Список групп аккаунта."""
+        """Список групп аккаунта, включая ожидающие приглашения."""
         resp = await self._request("GET", f"/v1/groups/{_q(identifier)}")
         data = self._json_or_empty(resp)
         if isinstance(data, dict):
@@ -220,21 +223,47 @@ class RestApiBackend:
         for item in data or []:
             if not isinstance(item, dict):
                 continue
-            gid = item.get("id") or item.get("groupId") or ""
-            if not gid:
-                continue
-            groups.append(
-                GroupInfo(
-                    id=str(gid),
-                    name=str(item.get("name") or ""),
-                    description=str(item.get("description") or ""),
-                    members=list(item.get("members") or []),
-                    admins=list(item.get("admins") or []),
-                    is_member=bool(item.get("isMember", True)),
-                    raw=item,
-                )
-            )
+            info = group_from_payload(item)
+            if info is not None:
+                groups.append(info)
         return groups
+
+    async def pull_messages(self, identifier: str) -> None:
+        """GET /v1/receive/{number}: без приёма signal-cli не видит новое приглашение.
+
+        В native-режиме это обычный GET. Если приём уже занят сокетом, ошибка
+        не фатальна — дальше всё равно читаем уже сохранённые группы.
+        """
+        try:
+            await self._request(
+                "GET",
+                f"/v1/receive/{_q(identifier)}",
+                params={
+                    "timeout": "1",
+                    "ignore_attachments": "true",
+                    "ignore_stories": "true",
+                    "ignore_stickers": "true",
+                },
+                timeout=8.0,
+            )
+        except SignalError as exc:
+            log.info("Приём сообщений %s пропущен: %s", identifier, exc)
+
+    async def accept_group_invite(self, identifier: str, group_id: str) -> None:
+        """POST /v1/groups/{number}/{groupid}/join.
+
+        signal-cli делает это через updateGroup: если аккаунт уже в
+        pending members, команда принимает приглашение. Сюда попадают только
+        группы, которые list_groups уже показал как приглашение этому аккаунту.
+        Повтор для уже принятой группы не считается ошибкой.
+        """
+        try:
+            await self._request("POST", f"/v1/groups/{_q(identifier)}/{_q(group_id)}/join")
+        except SignalError as exc:
+            if accept_already_done(exc):
+                log.info("Приглашение %s уже принято: %s", group_id[:24], exc)
+                return
+            raise
 
     # --- отправка --------------------------------------------------------------
 

@@ -7,11 +7,12 @@ from fastapi.testclient import TestClient
 from app.config import settings
 from app.db import SessionLocal, engine, init_db, dispose_engine
 from app.main import app
-from app.models import Base
+from app.models import Account, Base
 from app.routers.deps import COOKIE_NAME
 from app.signal import reset_backend_cache
-from app.signal.base import SignalBackend
+from app.signal.base import GroupInfo, SignalBackend
 from app.signal.fake import FakeBackend
+from app.services.inbox import is_group_membership_event
 from app.services import broadcaster
 from app.services import accounts as accounts_service
 from app.services import campaigns as campaigns_service
@@ -89,6 +90,76 @@ def test_accounts_page_renders():
     assert "Список аккаунтов" in response.text
     assert "Привязать аккаунт" in response.text
     assert "Internal Server Error" not in response.text
+
+
+def test_groups_page_mentions_auto_accept():
+    """Страница групп говорит, что приглашения принимаются сами."""
+    with TestClient(app) as client:
+        if settings.admin_token:
+            client.cookies.set(COOKIE_NAME, settings.admin_token)
+        response = client.get("/groups", headers={"accept": "text/html"})
+    assert response.status_code == 200
+    assert "Приглашения в группы принимаются автоматически" in response.text
+    assert "Синхронизировать с Signal" in response.text
+
+
+def test_membership_event_is_not_a_chat_message():
+    invite = {"envelope": {"dataMessage": {"groupV2": {"groupId": "abc"}}}}
+    chat = {"envelope": {"dataMessage": {"message": "привет", "groupV2": {"groupId": "abc"}}}}
+    assert is_group_membership_event(invite) is True
+    assert is_group_membership_event(chat) is False
+
+
+@pytest.mark.asyncio
+async def test_auto_accept_pending_invite_then_sync(fake_backend):
+    """Приглашение, уже адресованное аккаунту, принимается и попадает в кэш групп.
+
+    Чужую заявку (мы уже участник, pending — кто-то другой) не принимаем.
+    Повторная синхронизация и повторный accept уже принятой группы не падают.
+    """
+    ident = "+10000000001"
+    fake_backend.staged_invites[ident] = [
+        GroupInfo(
+            id="group.INVITE==",
+            name="Приглашённая группа",
+            members=["+19990001122"],
+            pending_members=[ident],
+            is_member=False,
+        )
+    ]
+    fake_backend.groups[ident].append(
+        GroupInfo(
+            id="group.FOREIGN==",
+            name="Чужая заявка",
+            members=[ident, "+19990001122"],
+            pending_members=["+19990001122"],
+            is_member=True,
+        )
+    )
+    async with SessionLocal() as session:
+        account = Account(number=ident, status="linked", backend="fake")
+        session.add(account)
+        await session.commit()
+        await session.refresh(account)
+        account_id = account.id
+
+        results = await groups_service.sync_linked_accounts(session, fake_backend)
+        assert len(results) == 1
+        assert results[0].accepted == 1
+        assert "принято приглашений 1" in results[0].summary
+
+        rows = await groups_service.list_groups(session, account_id=account_id)
+        by_id = {row.group_id: row for row in rows}
+        assert by_id["group.INVITE=="].name == "Приглашённая группа"
+        assert by_id["group.INVITE=="].is_member is True
+        assert by_id["group.INVITE=="].active is True
+        assert [group_id for _, group_id in fake_backend.accepted_calls] == ["group.INVITE=="]
+
+        again = await groups_service.sync_linked_accounts(session, fake_backend)
+        assert again[0].accepted == 0
+        await fake_backend.accept_group_invite(ident, "group.INVITE==")
+        kept = await groups_service.list_groups(session, account_id=account_id)
+        assert any(row.group_id == "group.INVITE==" and row.is_member for row in kept)
 
 
 @pytest.mark.asyncio

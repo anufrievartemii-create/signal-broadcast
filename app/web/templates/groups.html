@@ -24,6 +24,7 @@
         <a href="/groups" class="px-3 py-2 text-sm border border-gray-300 rounded hover:bg-gray-50">сброс</a>
       </form>
 
+      <p class="text-xs text-gray-500 mt-3">Приглашения в группы принимаются автоматически: аккаунт вступает в группу, и она появляется в этом списке.</p>
       <div class="flex justify-between items-end mb-2">
         <form method="post" action="/groups/sync">
           {% if selected_account %}<input type="hidden" name="account_id" value="{{ selected_account }}">{% endif %}
@@ -55,7 +56,7 @@
             <td class="p-2 text-xs">{{ 'участник' if g.is_member else 'не участник' }}{{ ' · админ' if g.is_admin else '' }}</td>
           </tr>
           {% else %}
-          <tr><td class="p-4 text-center text-gray-500" colspan="7">Групп нет. Добавьте аккаунт и нажмите «Синхронизировать с Signal».</td></tr>
+          <tr><td class="p-4 text-center text-gray-500" colspan="7">Групп пока нет. Приглашения принимаются автоматически, список можно обновить кнопкой «Синхронизировать с Signal».</td></tr>
           {% endfor %}
         </tbody>
       </table>
