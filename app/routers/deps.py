@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlencode
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.templating import Jinja2Templates
@@ -27,6 +28,7 @@ def fmt_dt(value: datetime | str | None, fmt: str = "%Y-%m-%d %H:%M") -> str:
 templates = Jinja2Templates(directory=str(WEB_DIR / "templates"))
 templates.env.filters["fmt_dt"] = fmt_dt
 templates.env.globals["app_settings"] = settings
+templates.env.globals["backend_name"] = settings.signal_backend
 templates.env.globals["app_version"] = "0.1.0"
 
 COOKIE_NAME = "sb_token"
@@ -62,8 +64,6 @@ AuthDep = Annotated[None, Depends(require_auth)]
 
 def redirect_with_message(path: str, *, ok: str | None = None, err: str | None = None) -> str:
     """Формирует путь с сообщением для пользователя (flash через query-параметр)."""
-    from urllib.parse import urlencode
-
     params: dict[str, str] = {}
     if ok:
         params["ok"] = ok

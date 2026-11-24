@@ -19,7 +19,7 @@
       <a href="/campaigns" class="px-2 py-1 {% if active == 'campaigns' %}bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600{% else %}text-gray-600 hover:text-indigo-600{% endif %}">Рассылки</a>
     </div>
     <div class="flex items-center gap-2">
-      {% if settings.admin_token %}
+      {% if app_settings.admin_token %}
       <a href="/logout" class="px-3 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50">Выход</a>
       {% else %}
       <a href="/login" class="px-3 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50">Войти</a>
@@ -38,7 +38,7 @@
 </main>
 
 <footer class="border-t border-gray-200 bg-white px-4 py-6 mt-12 text-xs text-gray-500">
-  signal-broadcast v{{ app_version }} · бэкенд: {{ backend_name }} · API Signal: {{ settings.signal_api_url }}
+  signal-broadcast v{{ app_version }} · бэкенд: {{ backend_name }} · API Signal: {{ app_settings.signal_api_url }}
 </footer>
 </body>
 </html>

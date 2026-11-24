@@ -123,6 +123,7 @@ async def accounts_page(
 async def run_page(
     request: Request,
     session: SessionDep,
+    _auth: AuthDep,
     campaign_id: int,
     ok: str | None = None,
     err: str | None = None,

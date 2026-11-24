@@ -48,7 +48,7 @@
       <div class="p-4 border-b border-gray-200 flex items-center justify-between">
         <h2 class="font-semibold">Список аккаунтов</h2>
         <div class="flex gap-2">
-          <button hx-get="/api/accounts/sync" hx-target="#accountsTable" hx-swap="outerHTML" class="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50">Синхронизировать</button>
+          <button hx-post="/api/accounts/sync" hx-swap="none" hx-on::after-request="if(event.detail.successful) location.reload()" class="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50">Синхронизировать</button>
         </div>
       </div>
       <table id="accountsTable" class="w-full text-sm divide-y divide-gray-100">
@@ -77,7 +77,7 @@
               {% if a.status == 'linked' %}
               <a href="/groups?account_id={{ a.id }}" class="text-xs text-indigo-600 hover:underline">группы</a>
               {% endif %}
-              <form hx-delete="/api/accounts/{{ a.id }}" hx-confirm="Удалить аккаунт из панели? Это не удалит номер из Signal." hx-target="closest tr" hx-swap="outerHTML" class="inline-block mt-1">
+              <form hx-delete="/api/accounts/{{ a.id }}" hx-confirm="Удалить аккаунт из панели? Это не удалит номер из Signal." hx-swap="none" hx-on::after-request="if(event.detail.successful) location.reload()" class="inline-block mt-1">
                 <button type="submit" class="text-xs text-red-600 hover:underline">Удалить</button>
               </form>
             </td>

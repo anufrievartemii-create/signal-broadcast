@@ -6,8 +6,13 @@
   <a href="/campaigns/new" class="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700">+ Новая рассылка</a>
 </div>
 
-<form hx-get="/campaigns" hx-target="#campaignsTable" hx-swap="innerHTML" class="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
-  <input name="account_id" value="{{ selected_account or '' }}" class="border border-gray-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none">
+<form method="get" action="/campaigns" class="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
+  <select name="account_id" class="border border-gray-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none">
+    <option value="">Все аккаунты</option>
+    {% for a in accounts %}
+    <option value="{{ a.id }}" {% if selected_account==a.id %}selected{% endif %}>{{ a.label or a.identifier }}</option>
+    {% endfor %}
+  </select>
   <select name="status" class="border border-gray-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none">
     <option value="">Любой статус</option>
     <option value="draft" {% if status_filter=='draft' %}selected{% endif %}>Черновик</option>
@@ -53,14 +58,14 @@
         <a href="/run/{{ c.id }}" class="text-xs text-indigo-600 hover:underline">смотреть</a>
         {% endif %}
         {% if c.status != 'running' %}
-        <button hx-post="/api/campaigns/{{ c.id }}/start" hx-target="closest tr" hx-swap="outerHTML" class="text-xs bg-green-600 text-white px-2 py-1 rounded hover:bg-green-700 disabled:opacity-50">Запустить</button>
+        <button hx-post="/api/campaigns/{{ c.id }}/start" hx-swap="none" hx-on::after-request="if(event.detail.successful) location.reload()" class="text-xs bg-green-600 text-white px-2 py-1 rounded hover:bg-green-700 disabled:opacity-50">Запустить</button>
         {% endif %}
         {% if c.status == 'running' %}
-        <button hx-post="/api/campaigns/{{ c.id }}/pause" hx-target="closest tr" hx-swap="outerHTML" class="text-xs bg-yellow-600 text-white px-2 py-1 rounded hover:bg-yellow-700">Пауза</button>
-        <button hx-post="/api/campaigns/{{ c.id }}/abort" hx-target="closest tr" hx-swap="outerHTML" class="text-xs bg-red-600 text-white px-2 py-1 rounded hover:bg-red-700">Стоп</button>
+        <button hx-post="/api/campaigns/{{ c.id }}/pause" hx-swap="none" hx-on::after-request="if(event.detail.successful) location.reload()" class="text-xs bg-yellow-600 text-white px-2 py-1 rounded hover:bg-yellow-700">Пауза</button>
+        <button hx-post="/api/campaigns/{{ c.id }}/abort" hx-swap="none" hx-on::after-request="if(event.detail.successful) location.reload()" class="text-xs bg-red-600 text-white px-2 py-1 rounded hover:bg-red-700">Стоп</button>
         {% endif %}
         {% if c.status == 'failed' or (c.counts and c.counts.failed) %}
-        <button hx-post="/api/campaigns/{{ c.id }}/retry" hx-target="closest tr" hx-swap="outerHTML" class="text-xs text-indigo-600 hover:underline mt-1">Повтор ошибок</button>
+        <button hx-post="/api/campaigns/{{ c.id }}/retry" hx-swap="none" hx-on::after-request="if(event.detail.successful) location.reload()" class="text-xs text-indigo-600 hover:underline mt-1">Повтор ошибок</button>
         {% endif %}
         <a href="/api/campaigns/{{ c.id }}/export" class="text-xs text-gray-500 hover:underline mt-1">CSV</a>
       </td>

@@ -152,7 +152,7 @@ async def api_list_groups(
                 for g in groups
             ],
             "tags": tags,
-            "stats": await groups_service.group_stats(account_id),
+            "stats": await groups_service.group_stats(session, account_id),
         }
     )
 
